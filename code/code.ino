@@ -58,6 +58,21 @@ bool isRamping = false;
 unsigned long rampStartTime = 0;
 int originalSetpoint = 0;
 
+// Sleep and Boost Settings
+const int SLEEP_TEMP = 150;
+const unsigned long SLEEP_TIMEOUT = 3 * 60000; // 3 minutes
+const unsigned long SHUTOFF_TIMEOUT = 7 * 60000; // 7 minutes after sleep
+volatile bool isSleeping = false;
+
+bool isBoostActive = false;
+unsigned long boostStartTime = 0;
+const unsigned long BOOST_DURATION = 45000; // 45 seconds
+const int BOOST_TEMP_OFFSET = 50; // +50°C
+
+// Button Dispatcher variables
+volatile int clickCount = 0;
+volatile unsigned long lastClickTime = 0;
+
 // LED Colors
 const uint32_t COLOR_OFF = 0x000000;      // Black (OFF)
 const uint32_t COLOR_HEATING = 0xFF0000;  // Red (Heating)
@@ -65,6 +80,7 @@ const uint32_t COLOR_READY = 0x00FF00;    // Green (Ready)
 const uint32_t COLOR_COOLING = 0x0000FF;  // Blue (Cooling)
 const uint32_t COLOR_WARNING = 0xFFFF00;  // Yellow (Warning)
 const uint32_t COLOR_RAMPING = 0xFF00FF;  // Purple (Ramping)
+const uint32_t COLOR_BOOST = 0x00FFFF;    // Cyan (Boost)
 
 // Global Variables
 #ifdef USE_OLED
@@ -144,12 +160,16 @@ void loop() {
   readTemperature();
   updateTemperatureAverage();
   handleButtonPress();
+  checkClicks();
+  handleBoost();
 
   if (sensorError || thermalRunawayError) {
     pwm = 0;
     analogWrite(IRON_PIN, 0);
     ledOffState = true;
     isRamping = false;
+    isSleeping = false;
+    isBoostActive = false;
   } else {
     updatePID();
     checkSafety();
@@ -233,6 +253,12 @@ void saveTemperature() {
 void encoderISR() {
   if (ledOffState || sensorError || thermalRunawayError) return;
   
+  if (isSleeping) {
+    isSleeping = false;
+    lastActivityTime = millis();
+    return; // Wake up first without changing temperature
+  }
+  
   if (digitalRead(ENCODER_DT_PIN) == HIGH) {
     knob = constrain(knob + 10, MIN_KNOB, MAX_KNOB);
   } else {
@@ -309,7 +335,7 @@ void checkSafety() {
 }
 
 void adaptPIDParameters() {
-  if (ledOffState || isRamping || sensorError || thermalRunawayError) {
+  if (ledOffState || isRamping || sensorError || thermalRunawayError || isSleeping || isBoostActive) {
     sumError = 0;
     errorCount = 0;
     adaptationLoopCount = 0;
@@ -345,7 +371,15 @@ void adaptPIDParameters() {
 
 void updatePID() {
   Input = filteredTemp;
-  Setpoint = isRamping ? calculateRampSetpoint() : knob;
+  if (isRamping) {
+    Setpoint = calculateRampSetpoint();
+  } else if (isBoostActive) {
+    Setpoint = constrain(knob + BOOST_TEMP_OFFSET, MIN_KNOB, MAX_KNOB);
+  } else if (isSleeping) {
+    Setpoint = SLEEP_TEMP;
+  } else {
+    Setpoint = knob;
+  }
   myPID.Compute();
   pwm = Output;
 }
@@ -394,6 +428,11 @@ void controlIronAndLED() {
       lcd.backlight();
     }
 #endif
+  } else if (isSleeping) {
+    pulseSleepLED();
+#ifndef USE_OLED
+    lcd.backlight();
+#endif
   } else {
     // We are active
 #ifndef USE_OLED
@@ -405,7 +444,9 @@ void controlIronAndLED() {
       pwm = 0;
     }
 
-    if (isRamping) {
+    if (isBoostActive) {
+      setLEDColor(COLOR_BOOST);
+    } else if (isRamping) {
       setLEDColor(COLOR_RAMPING);
     } else if (currentTemp < Setpoint - 10) {
       setLEDColor(COLOR_HEATING);
@@ -477,6 +518,21 @@ void updateDisplay() {
       display.setCursor(74, 0);
       display.print(remainingTime);
       display.print("s");
+    } else if (isBoostActive) {
+      display.print("BOOST");
+      int remainingTime = (BOOST_DURATION - (currentMillis - boostStartTime)) / 1000;
+      if (remainingTime < 0) remainingTime = 0;
+      display.setCursor(74, 0);
+      display.print(remainingTime);
+      display.print("s");
+    } else if (isSleeping) {
+      display.print("SLEEP");
+      display.setCursor(74, 0);
+      int targetTemp = isFahrenheit ? (int)(SLEEP_TEMP * 1.8 + 32) : SLEEP_TEMP;
+      display.print(targetTemp);
+      display.setTextSize(1);
+      display.print((char)247);
+      display.print(isFahrenheit ? "F" : "C");
     } else {
       display.print(ledOffState ? "OFF  " : "SET  ");
       display.setCursor(74, 0);
@@ -548,6 +604,19 @@ void updateDisplay() {
         lcd.print("OFF ");
         lcd.setCursor(0, 1);
         lcd.print("--- ");
+      } else if (isSleeping) {
+        lcd.print("SLP ");
+        lcd.setCursor(0, 1);
+        int targetTemp = isFahrenheit ? (int)(SLEEP_TEMP * 1.8 + 32) : SLEEP_TEMP;
+        lcd.print("S" + String(targetTemp));
+        if (targetTemp < 100) lcd.print("  ");
+        else if (targetTemp < 1000) lcd.print(" ");
+      } else if (isBoostActive) {
+        lcd.print("BST ");
+        lcd.setCursor(0, 1);
+        int remainingTime = (BOOST_DURATION - (currentMillis - boostStartTime)) / 1000;
+        if (remainingTime < 0) remainingTime = 0;
+        lcd.print("B" + String(remainingTime) + "s ");
       } else {
         int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
         lcd.print("S" + String(targetTemp));
@@ -596,26 +665,9 @@ void handleButtonPress() {
           EEPROM.update(EEPROM_UNIT_ADDRESS, isFahrenheit ? 1 : 0);
           beep(300); // Long beep indicator
         } else {
-          // Short press: Action logic
-          if (sensorError || thermalRunawayError) {
-            // Clear error on button press to retry
-            sensorError = false;
-            thermalRunawayError = false;
-            lastThermalCheckTime = millis();
-            lastThermalTemp = currentTemp;
-            beep(200);
-          } else if (ledOffState) {
-            ledOffState = false;
-            digitalWrite(LED_OFF_PIN, LOW);
-            beep(100);
-          } else if (!isRamping) {
-            startRamping();
-          } else {
-            ledOffState = true;
-            isRamping = false;
-            digitalWrite(LED_OFF_PIN, HIGH);
-            beep(50);
-          }
+          // Short press: Register click
+          clickCount++;
+          lastClickTime = millis();
         }
         lastActivityTime = millis();
       }
@@ -651,12 +703,94 @@ void handleRamping() {
 }
 
 void checkAutoShutoff() {
-  if (!ledOffState && (millis() - lastActivityTime > AUTO_SHUTOFF_TIME)) {
+  if (ledOffState) return;
+
+  unsigned long idleTime = millis() - lastActivityTime;
+
+  // Inactivity Sleep trigger (3 minutes)
+  if (idleTime > SLEEP_TIMEOUT) {
+    if (!isSleeping && !isRamping && !isBoostActive) {
+      isSleeping = true;
+      beep(150);
+    }
+  } else {
+    isSleeping = false;
+  }
+
+  // Auto shutoff after 10 minutes total inactivity
+  if (idleTime > AUTO_SHUTOFF_TIME) {
     ledOffState = true;
+    isSleeping = false;
+    isBoostActive = false;
     digitalWrite(LED_OFF_PIN, HIGH);
     setLEDColor(COLOR_OFF);
     beep(200);
     autoShutoffMsgStartTime = millis();
     lastActivityTime = millis(); // Reset activity timer
+  }
+}
+
+void pulseSleepLED() {
+  static unsigned long lastPulseTime = 0;
+  static int brightness = 0;
+  static bool fadingUp = true;
+  
+  if (millis() - lastPulseTime > 15) {
+    lastPulseTime = millis();
+    if (fadingUp) {
+      brightness += 2;
+      if (brightness >= 80) fadingUp = false;
+    } else {
+      brightness -= 2;
+      if (brightness <= 5) fadingUp = true;
+    }
+    pixel.setPixelColor(0, pixel.Color(0, 0, brightness)); // Pulse Blue
+    pixel.show();
+  }
+}
+
+void handleBoost() {
+  if (isBoostActive && (millis() - boostStartTime > BOOST_DURATION)) {
+    isBoostActive = false;
+    beep(300);
+  }
+}
+
+void checkClicks() {
+  if (clickCount > 0 && (millis() - lastClickTime > 250)) {
+    if (clickCount == 1) {
+      if (isSleeping) {
+        isSleeping = false;
+        lastActivityTime = millis();
+        beep(100);
+      } else if (sensorError || thermalRunawayError) {
+        sensorError = false;
+        thermalRunawayError = false;
+        lastThermalCheckTime = millis();
+        lastThermalTemp = currentTemp;
+        beep(200);
+      } else if (ledOffState) {
+        ledOffState = false;
+        digitalWrite(LED_OFF_PIN, LOW);
+        beep(100);
+      } else if (isBoostActive) {
+        isBoostActive = false;
+        beep(50);
+      } else if (!isRamping) {
+        startRamping();
+      } else {
+        ledOffState = true;
+        isRamping = false;
+        digitalWrite(LED_OFF_PIN, HIGH);
+        beep(50);
+      }
+    } else if (clickCount >= 2) {
+      if (!ledOffState && !sensorError && !thermalRunawayError && !isSleeping) {
+        isBoostActive = !isBoostActive;
+        boostStartTime = millis();
+        beep(250);
+      }
+    }
+    clickCount = 0;
   }
 }
