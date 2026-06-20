@@ -58,7 +58,7 @@ double Kp = 2.0, Ki = 5.0, Kd = 1.0;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // Ramping Variables
-volatile int rampTimeSetting = 20; // seconds
+volatile uint8_t rampTimeSetting = 20; // seconds
 volatile int rampTempSetting = 500; // C
 bool isRamping = false;
 unsigned long rampStartTime = 0;
@@ -66,8 +66,8 @@ int originalSetpoint = 0;
 
 // Sleep and Boost Settings
 volatile int sleepTempSetting = 150;
-volatile int sleepTimeSetting = 3; // minutes (0 = Disabled)
-volatile int offTimeSetting = 10;  // minutes
+volatile uint8_t sleepTimeSetting = 3; // minutes (0 = Disabled)
+volatile uint8_t offTimeSetting = 10;  // minutes
 volatile bool isSleeping = false;
 
 bool isBoostActive = false;
@@ -82,7 +82,7 @@ volatile unsigned long lastClickTime = 0;
 // Configuration Menu variables
 volatile bool inMenu = false;
 volatile bool editMode = false;
-volatile int menuIndex = 0;
+volatile int8_t menuIndex = 0;
 
 // LED Colors
 const uint32_t COLOR_OFF = 0x000000;      // Black (OFF)
@@ -121,14 +121,41 @@ unsigned long previousMillis = 0;
 float currentTemp = 0.0;
 float store = 0.0;
 
-bool ledOffState = true;
+volatile bool ledOffState = true;
 int lastButtonState = HIGH;
 
 // Safety & Filter variables
-bool sensorError = false;
-bool thermalRunawayError = false;
+volatile bool sensorError = false;
+volatile bool thermalRunawayError = false;
 unsigned long autoShutoffMsgStartTime = 0;
 volatile bool isFahrenheit = false;
+
+// Atomic read/write helpers for AVR non-atomic variables
+inline int readIntAtomic(volatile int &var) {
+  noInterrupts();
+  int val = var;
+  interrupts();
+  return val;
+}
+
+inline void writeIntAtomic(volatile int &var, int val) {
+  noInterrupts();
+  var = val;
+  interrupts();
+}
+
+inline unsigned long readULongAtomic(volatile unsigned long &var) {
+  noInterrupts();
+  unsigned long val = var;
+  interrupts();
+  return val;
+}
+
+inline void writeULongAtomic(volatile unsigned long &var, unsigned long val) {
+  noInterrupts();
+  var = val;
+  interrupts();
+}
 
 double filteredTemp = 0.0;
 const float FILTER_ALPHA = 0.15; // EMA filter constant
@@ -165,7 +192,7 @@ void setup() {
 
   // Initialize PID
   Input = filteredTemp;
-  Setpoint = knob;
+  Setpoint = readIntAtomic(knob);
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(0, MAX_PWM);
 }
@@ -200,9 +227,11 @@ void loop() {
   adaptPIDParameters();
 
   // Save settings asynchronously after user stops rotating to prevent EEPROM wear
-  if (settingsChanged && (millis() - lastSettingsChangeTime > 2000)) {
+  if (settingsChanged && (millis() - readULongAtomic(lastSettingsChangeTime) > 2000)) {
     saveTemperature();
+    noInterrupts();
     settingsChanged = false;
+    interrupts();
   }
 }
 
@@ -321,16 +350,16 @@ void loadSavedTemperature() {
 }
 
 void saveTemperature() {
-  EEPROM.put(EEPROM_TEMP_ADDRESS, (int)knob);
+  EEPROM.put(EEPROM_TEMP_ADDRESS, readIntAtomic(knob));
 }
 
 void saveMenuSettings() {
   EEPROM.put(EEPROM_UNIT_ADDRESS, (byte)(isFahrenheit ? 1 : 0));
-  EEPROM.put(EEPROM_SLEEP_TEMP_ADDRESS, (int)sleepTempSetting);
+  EEPROM.put(EEPROM_SLEEP_TEMP_ADDRESS, readIntAtomic(sleepTempSetting));
   EEPROM.put(EEPROM_SLEEP_TIME_ADDRESS, (byte)sleepTimeSetting);
   EEPROM.put(EEPROM_OFF_TIME_ADDRESS, (byte)offTimeSetting);
   EEPROM.put(EEPROM_RAMP_TIME_ADDRESS, (byte)rampTimeSetting);
-  EEPROM.put(EEPROM_RAMP_TEMP_ADDRESS, (int)rampTempSetting);
+  EEPROM.put(EEPROM_RAMP_TEMP_ADDRESS, readIntAtomic(rampTempSetting));
 }
 
 void encoderISR() {
@@ -344,10 +373,10 @@ void encoderISR() {
           sleepTempSetting = constrain(sleepTempSetting + (dir * 5), 100, 200);
           break;
         case 1: // Sleep Time (minutes, 0 = Disabled)
-          sleepTimeSetting = constrain(sleepTimeSetting + dir, 0, 10);
+          sleepTimeSetting = constrain((int)sleepTimeSetting + dir, 0, 10);
           break;
         case 2: // Off Time (minutes)
-          offTimeSetting = constrain(offTimeSetting + dir, 1, 20);
+          offTimeSetting = constrain((int)offTimeSetting + dir, 1, 20);
           // Ensure shutoff time is strictly greater than sleep time
           if (sleepTimeSetting > 0 && offTimeSetting <= sleepTimeSetting) {
             offTimeSetting = sleepTimeSetting + 1;
@@ -357,7 +386,7 @@ void encoderISR() {
           isFahrenheit = !isFahrenheit;
           break;
         case 4: // Ramp Time
-          rampTimeSetting = constrain(rampTimeSetting + dir, 10, 60);
+          rampTimeSetting = constrain((int)rampTimeSetting + dir, 10, 60);
           break;
         case 5: // Ramp Temp
           rampTempSetting = constrain(rampTempSetting + (dir * 5), 300, 500);
@@ -495,11 +524,11 @@ void updatePID() {
   if (isRamping) {
     Setpoint = calculateRampSetpoint();
   } else if (isBoostActive) {
-    Setpoint = constrain(knob + BOOST_TEMP_OFFSET, MIN_KNOB, MAX_KNOB);
+    Setpoint = constrain(readIntAtomic(knob) + BOOST_TEMP_OFFSET, MIN_KNOB, MAX_KNOB);
   } else if (isSleeping && sleepTimeSetting > 0) {
-    Setpoint = sleepTempSetting;
+    Setpoint = readIntAtomic(sleepTempSetting);
   } else {
-    Setpoint = knob;
+    Setpoint = readIntAtomic(knob);
   }
   myPID.Compute();
   pwm = Output;
@@ -641,7 +670,7 @@ void updateDisplay() {
       switch (menuIndex) {
         case 0:
           {
-            int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
+            int temp = isFahrenheit ? (int)(readIntAtomic(sleepTempSetting) * 1.8 + 32) : readIntAtomic(sleepTempSetting);
             display.print(temp);
             display.print(isFahrenheit ? F("F") : F("C"));
           }
@@ -663,7 +692,7 @@ void updateDisplay() {
           break;
         case 5:
           {
-            int temp = isFahrenheit ? (int)(rampTempSetting * 1.8 + 32) : rampTempSetting;
+            int temp = isFahrenheit ? (int)(readIntAtomic(rampTempSetting) * 1.8 + 32) : readIntAtomic(rampTempSetting);
             display.print(temp);
             display.print(isFahrenheit ? F("F") : F("C"));
           }
@@ -732,7 +761,7 @@ void updateDisplay() {
     if (ledOffState && !isSleeping) {
       display.print(F("---"));
     } else {
-      int targetTemp = isSleeping ? sleepTempSetting : knob;
+      int targetTemp = isSleeping ? readIntAtomic(sleepTempSetting) : readIntAtomic(knob);
       display.print(isFahrenheit ? (int)(targetTemp * 1.8 + 32) : targetTemp);
       display.print((char)247);
       display.print(isFahrenheit ? F("F") : F("C"));
@@ -775,7 +804,7 @@ void updateDisplay() {
           lcd.print(F("1. Sleep Temp   "));
           lcd.setCursor(0, 1);
           {
-            int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
+            int temp = isFahrenheit ? (int)(readIntAtomic(sleepTempSetting) * 1.8 + 32) : readIntAtomic(sleepTempSetting);
             if (editMode) {
               lcd.print(F("Edit: ["));
               lcd.print(temp);
@@ -844,7 +873,7 @@ void updateDisplay() {
           lcd.print(F("6. Ramp Temp    "));
           lcd.setCursor(0, 1);
           {
-            int temp = isFahrenheit ? (int)(rampTempSetting * 1.8 + 32) : rampTempSetting;
+            int temp = isFahrenheit ? (int)(readIntAtomic(rampTempSetting) * 1.8 + 32) : readIntAtomic(rampTempSetting);
             if (editMode) {
               lcd.print(F("Edit: ["));
               lcd.print(temp);
@@ -907,7 +936,7 @@ void updateDisplay() {
       } else if (isSleeping) {
         lcd.print(F("SLP "));
         lcd.setCursor(0, 1);
-        int targetTemp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
+        int targetTemp = isFahrenheit ? (int)(readIntAtomic(sleepTempSetting) * 1.8 + 32) : readIntAtomic(sleepTempSetting);
         lcd.print(F("S"));
         lcd.print(targetTemp);
         if (targetTemp < 100) lcd.print(F("  "));
@@ -921,7 +950,7 @@ void updateDisplay() {
         lcd.print(remainingTime);
         lcd.print(F("s "));
       } else {
-        int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
+        int targetTemp = isFahrenheit ? (int)(readIntAtomic(knob) * 1.8 + 32) : readIntAtomic(knob);
         lcd.print(F("S"));
         lcd.print(targetTemp);
         if (targetTemp < 100) lcd.print(F("  "));
@@ -972,7 +1001,7 @@ void handleButtonPress() {
           clickCount++;
           lastClickTime = millis();
         }
-        lastActivityTime = millis();
+        writeULongAtomic(lastActivityTime, millis());
       }
     }
   }
@@ -997,7 +1026,7 @@ void handleButtonPress() {
         saveMenuSettings();
       }
       beep(300); // Long beep indicator
-      lastActivityTime = millis();
+      writeULongAtomic(lastActivityTime, millis());
     }
   }
 }
@@ -1005,7 +1034,7 @@ void handleButtonPress() {
 void startRamping() {
   isRamping = true;
   rampStartTime = millis();
-  originalSetpoint = knob;
+  originalSetpoint = readIntAtomic(knob);
   beep(150);
 }
 
@@ -1017,7 +1046,7 @@ int calculateRampSetpoint() {
     return originalSetpoint;
   }
 
-  int rampTarget = rampTempSetting;
+  int rampTarget = readIntAtomic(rampTempSetting);
   float progress = (float)elapsedTime / rampDurationMs;
   return originalSetpoint + (rampTarget - originalSetpoint) * progress;
 }
@@ -1033,7 +1062,7 @@ void handleRamping() {
 void checkAutoShutoff() {
   if (ledOffState) return;
 
-  unsigned long idleTime = millis() - lastActivityTime;
+  unsigned long idleTime = millis() - readULongAtomic(lastActivityTime);
 
   // Inactivity Sleep trigger (only if not in menu)
   if (sleepTimeSetting > 0 && !inMenu) {
@@ -1062,7 +1091,7 @@ void checkAutoShutoff() {
     setLEDColor(COLOR_OFF);
     beep(200);
     autoShutoffMsgStartTime = millis();
-    lastActivityTime = millis(); // Reset activity timer
+    writeULongAtomic(lastActivityTime, millis()); // Reset activity timer
   }
 }
 
@@ -1108,7 +1137,7 @@ void checkClicks() {
     if (clickCount == 1) {
       if (isSleeping) {
         isSleeping = false;
-        lastActivityTime = millis();
+        writeULongAtomic(lastActivityTime, millis());
         beep(100);
       } else if (sensorError || thermalRunawayError) {
         sensorError = false;
