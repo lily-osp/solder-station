@@ -321,7 +321,9 @@ void encoderISR() {
           break;
       }
     } else {
-      menuIndex = constrain(menuIndex + dir, 0, 4);
+      menuIndex += dir;
+      if (menuIndex > 3) menuIndex = 0;
+      else if (menuIndex < 0) menuIndex = 3;
     }
     lastActivityTime = millis();
     return;
@@ -575,7 +577,6 @@ void updateDisplay() {
         case 1: display.print(F("Sleep Time")); break;
         case 2: display.print(F("Off Time")); break;
         case 3: display.print(F("Temp Unit")); break;
-        case 4: display.print(F("Save & Exit")); break;
       }
       
       // Large setting value
@@ -606,9 +607,6 @@ void updateDisplay() {
           break;
         case 3:
           display.print(isFahrenheit ? F("F") : F("C"));
-          break;
-        case 4:
-          display.print(F("EXIT"));
           break;
       }
       
@@ -765,11 +763,6 @@ void updateDisplay() {
           } else {
             lcd.print(isFahrenheit ? F("Value: Fahrenheit") : F("Value: Celsius   "));
           }
-          break;
-        case 4:
-          lcd.print(F("5. Save & Exit  "));
-          lcd.setCursor(0, 1);
-          lcd.print(F("Click to exit   "));
           break;
       }
       return;
@@ -1011,16 +1004,8 @@ void checkClicks() {
   if (clickCount > 0 && (millis() - lastClickTime > 250)) {
     if (inMenu) {
       if (clickCount >= 1) {
-        if (menuIndex == 4) {
-          // Exit option selected
-          inMenu = false;
-          editMode = false;
-          saveMenuSettings();
-          beep(300);
-        } else {
-          editMode = !editMode;
-          beep(100);
-        }
+        editMode = !editMode;
+        beep(100);
       }
       clickCount = 0;
       return;
