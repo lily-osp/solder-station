@@ -26,16 +26,17 @@ The **Soldering Iron Controller** is an Arduino-based system designed to precise
 ## Features
 
 - Precise temperature control (100°C to 500°C range)
-- PID-based temperature regulation with adaptive tuning
+- PID-based temperature regulation with adaptive tuning (steady-state only)
+- Exponential Moving Average (EMA) filtering for stable PID inputs
 - Temperature ramping for rapid heating
-- OLED or I2C LCD display for clear temperature readouts
+- OLED or I2C LCD display for clear temperature readouts & status messages
 - WS2812 RGB LED for status indication
 - Rotary encoder with push button for intuitive control
+- Software-debounced input controls (50ms window)
+- EEPROM write preservation (asynchronous save after 2 seconds of knob idle)
 - Automatic shut-off after 10 minutes of inactivity
 - Watchdog timer for system reliability
-- Temperature sensor for accurate readings
-- PWM control for soldering iron heating element
-- Persistent settings saved in EEPROM
+- Sensor fault, thermal runaway, and overheat protections
 
 ## Hardware Requirements
 
@@ -110,8 +111,9 @@ Ensure all components share a common ground and proper power connections.
    - **Blue**: Cooling
    - **Yellow**: Warning (near max temperature)
    - **Purple**: Ramping
+   - **Flashing Red/Beeping**: Error State
    - **Off**: Iron off or auto-shutoff
-4. Press the encoder button to toggle the iron on/off or start ramping mode.
+4. Press the encoder button to toggle the iron on/off, start ramping mode, or clear active errors.
 
 ## Temperature Control System
 
@@ -121,10 +123,8 @@ The controller uses a PID algorithm to maintain stable temperatures:
 - **Ki**: 5
 - **Kd**: 1
 
-Adjust these values in the code for custom tuning.
-
 ### Temperature Ramping
-- Activated by pressing the encoder button.
+- Activated by pressing the encoder button when system is active.
 - Ramps to the max temperature (500°C) over 20 seconds, displaying a countdown.
 - Returns to the previous setpoint after ramping.
 
@@ -138,14 +138,16 @@ Switch displays by commenting/uncommenting the `USE_OLED` define in the code.
 
 ## Safety Features
 
+- **Sensor Disconnection & Short-Circuit Detection**: Continuous analog read checking. Raw values `<= 2` or `>= 1021` shut down the heater, activate the buzzer alarm, flash the status LED, and lock the system in an error state.
+- **Thermal Runaway Protection**: Activates if the heater applies significant power (`PWM > 150`) but the temperature fails to rise by at least 3.0°C over a 15-second window. Prevents heater damage if the sensor detaches.
+- **Overheat Protection**: Shuts down the system if the temperature exceeds a safe threshold of `MAX_TEMP + 10` (510°C).
+- **Error Recovery**: Pressing the button once resolves and clears error states after checking hardware connections.
 - **Automatic Shut-off**: After 10 minutes of inactivity, the iron is turned off.
-- **Watchdog Timer**: Resets the system if unresponsive.
-- **Overheat Protection**: Stops heating if the temperature exceeds a safe threshold.
-- **Error Detection**: Monitors sensor and system issues.
+- **Watchdog Timer**: Resets the system if responsive loop hangs.
 
 ## Persistent Settings
 
-The system saves the last temperature setting in EEPROM, allowing it to persist across power cycles.
+The system saves the last temperature setting in EEPROM, allowing it to persist across power cycles. It saves asynchronously after 2 seconds of knob inactivity to protect EEPROM write lifespan.
 
 ## Troubleshooting
 
@@ -154,6 +156,7 @@ The system saves the last temperature setting in EEPROM, allowing it to persist 
 - **LED Not Working**: Ensure WS2812 wiring and library installation.
 - **System Freezing**: Verify connections and PID stability.
 - **PID Tuning Issues**: Adjust Kp, Ki, Kd as needed.
+- **Sensor/Thermal Error State**: Verify connection and press the button once to clear.
 
 ## Maintenance
 
@@ -168,14 +171,14 @@ Test the setup in [Wokwi](https://wokwi.com/projects/408754608532252673).
 
 ## Adaptive PID Control
 
-The controller can adapt PID values based on system behavior:
-- **Loop Monitoring**: The system adapts PID values every 225 loops.
+The controller adapts PID values based on system behavior:
+- **Steady-State Monitoring**: The system adapts PID values every 225 loops, but only when within 15°C of the setpoint. This prevents gains from winding up during transient heating or ramping phases.
 - **Error Handling**: Sum of errors and counts are logged for adaptation.
 - **Overshoot Protection**: Limits the temperature overshoot to 10°C.
 
 ## Flowchart
 
-![flowchart](etc/flowchart.png)
+The workflow diagram is stored in [flowchart.md](etc/flowchart.md).
 
 ## Contributing
 

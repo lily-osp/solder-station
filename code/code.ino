@@ -39,7 +39,6 @@ const unsigned long AUTO_SHUTOFF_TIME = 10 * 60000; // 10 minutes in millisecond
 
 // Overshoot variable
 const float MAX_OVERSHOOT = 10.0; // Maximum allowed overshoot in °C
-float lastSetpoint = 0;
 
 // Adaptive PID variable
 int adaptationLoopCount = 0;  // Loop counter for PID adaptation
@@ -49,7 +48,7 @@ int errorCount = 0;
 
 // PID Variables
 double Setpoint, Input, Output;
-double Kp = 2, Ki = 5, Kd = 1;
+double Kp = 2.0, Ki = 5.0, Kd = 1.0;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // Ramping Variables
@@ -79,19 +78,43 @@ BigNumbers_I2C bigNum(&lcd);
 
 Adafruit_NeoPixel pixel(1, WS2812_PIN, NEO_GRB + NEO_KHZ800);
 
-// on run variable
+// Volatile state variables updated in interrupts
 volatile int knob = 100;
+volatile unsigned long lastActivityTime = 0;
+volatile bool settingsChanged = false;
+volatile unsigned long lastSettingsChangeTime = 0;
+
+// Non-volatile state variables
 int pwm = 0;
 int tempRaw = 0;
 int counter = 0;
 int currentTempAvg = 0;
 unsigned long previousMillis = 0;
-unsigned long lastActivityTime = 0;
 float currentTemp = 0.0;
 float store = 0.0;
 
 bool ledOffState = true;
 int lastButtonState = HIGH;
+
+// Safety & Filter variables
+bool sensorError = false;
+bool thermalRunawayError = false;
+unsigned long autoShutoffMsgStartTime = 0;
+
+double filteredTemp = 0.0;
+const float FILTER_ALPHA = 0.15; // EMA filter constant
+
+unsigned long lastThermalCheckTime = 0;
+float lastThermalTemp = 0.0;
+
+// Function Overloads for Buzzer
+void beep() {
+  tone(BUZZ_PIN, 1000, 100);
+}
+
+void beep(unsigned int duration) {
+  tone(BUZZ_PIN, 1000, duration);
+}
 
 void setup() {
   initializeWatchdog();
@@ -102,8 +125,12 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), encoderISR, FALLING);
   lastActivityTime = millis();
 
+  // Read initial temperature and seed filter
+  readTemperature();
+  filteredTemp = currentTemp;
+
   // Initialize PID
-  Input = currentTemp;
+  Input = filteredTemp;
   Setpoint = knob;
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(0, MAX_PWM);
@@ -115,13 +142,28 @@ void loop() {
   readTemperature();
   updateTemperatureAverage();
   handleButtonPress();
-  updatePID();
+
+  if (sensorError || thermalRunawayError) {
+    pwm = 0;
+    analogWrite(IRON_PIN, 0);
+    ledOffState = true;
+    isRamping = false;
+  } else {
+    updatePID();
+    checkSafety();
+  }
+
   controlIronAndLED();
   updateDisplay();
   checkAutoShutoff();
   handleRamping();
-  handleTemperatureOvershootProtection();
   adaptPIDParameters();
+
+  // Save settings asynchronously after user stops rotating to prevent EEPROM wear
+  if (settingsChanged && (millis() - lastSettingsChangeTime > 2000)) {
+    saveTemperature();
+    settingsChanged = false;
+  }
 }
 
 void initializeWatchdog() {
@@ -167,7 +209,7 @@ void initializeWS2812() {
 }
 
 void loadSavedTemperature() {
-  int savedTemp = EEPROM.read(EEPROM_TEMP_ADDRESS) << 8 | EEPROM.read(EEPROM_TEMP_ADDRESS + 1);
+  int savedTemp = (EEPROM.read(EEPROM_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_TEMP_ADDRESS + 1);
   if (savedTemp >= MIN_KNOB && savedTemp <= MAX_KNOB) {
     knob = savedTemp;
   }
@@ -179,19 +221,35 @@ void saveTemperature() {
 }
 
 void encoderISR() {
-  if (digitalRead(ENCODER_DT_PIN) == HIGH && !ledOffState) {
+  if (ledOffState || sensorError || thermalRunawayError) return;
+  
+  if (digitalRead(ENCODER_DT_PIN) == HIGH) {
     knob = constrain(knob + 10, MIN_KNOB, MAX_KNOB);
-    saveTemperature();
-  } else if (digitalRead(ENCODER_DT_PIN) == LOW && !ledOffState) {
+  } else {
     knob = constrain(knob - 10, MIN_KNOB, MAX_KNOB);
-    saveTemperature();
   }
-  lastActivityTime = millis(); // Update activity time
+  settingsChanged = true;
+  lastSettingsChangeTime = millis();
+  lastActivityTime = millis();
 }
 
 void readTemperature() {
   tempRaw = analogRead(TEMP_SENSOR_PIN);
+  
+  // Sensor error check: open circuit/short circuit detection
+  if (tempRaw <= 2 || tempRaw >= 1021) {
+    sensorError = true;
+    pwm = 0;
+    ledOffState = true;
+    isRamping = false;
+  } else {
+    sensorError = false;
+  }
+
   currentTemp = map(tempRaw, MIN_ADC, MAX_ADC, MIN_TEMP, MAX_TEMP);
+  
+  // Exponential Moving Average filter to smooth input
+  filteredTemp = (FILTER_ALPHA * currentTemp) + ((1.0 - FILTER_ALPHA) * filteredTemp);
 }
 
 void updateTemperatureAverage() {
@@ -205,83 +263,128 @@ void updateTemperatureAverage() {
   }
 }
 
-// Temperature Overshoot Protection
-void handleTemperatureOvershootProtection() {
-  if (Setpoint != lastSetpoint) {
-    // Setpoint has changed
-    if (Setpoint > lastSetpoint) {
-      // We're heating up, apply overshoot protection
-      float maxAllowedTemp = Setpoint + MAX_OVERSHOOT;
-      if (currentTemp > maxAllowedTemp) {
-        pwm = 0; // Cut power to prevent further overshoot
+void checkSafety() {
+  // Overheat protection
+  if (!ledOffState && currentTemp > (MAX_TEMP + 10)) {
+    thermalRunawayError = true;
+    ledOffState = true;
+    pwm = 0;
+    digitalWrite(LED_OFF_PIN, HIGH);
+  }
+
+  // Thermal runaway baseline initialization
+  if (ledOffState || thermalRunawayError || sensorError) {
+    lastThermalCheckTime = millis();
+    lastThermalTemp = currentTemp;
+    return;
+  }
+
+  // Thermal runaway protection: check if power is high but temperature fails to rise
+  if (pwm > 150 && (Setpoint - Input > 15)) {
+    if (millis() - lastThermalCheckTime > 15000) { // 15 seconds evaluation window
+      if (currentTemp < lastThermalTemp + 3.0) {
+        thermalRunawayError = true;
+        ledOffState = true;
+        pwm = 0;
+        digitalWrite(LED_OFF_PIN, HIGH);
+      } else {
+        lastThermalCheckTime = millis();
+        lastThermalTemp = currentTemp;
       }
     }
-    lastSetpoint = Setpoint;
+  } else {
+    lastThermalCheckTime = millis();
+    lastThermalTemp = currentTemp;
   }
 }
 
-// Adaptive PID
 void adaptPIDParameters() {
-  // Increment the loop counter
-  adaptationLoopCount++;
-
-  // Adapt PID parameters after a certain number of loops
-  if (adaptationLoopCount >= ADAPT_LOOP_THRESHOLD) {
-    float avgError = sumError / errorCount;
-
-    // Adjust PID parameters based on average error
-    if (abs(avgError) > 5) {
-      // If average error is large, increase proportional and integral terms
-      Kp *= 1.1;
-      Ki *= 1.1;
-    } else if (abs(avgError) < 2) {
-      // If average error is small, slightly decrease proportional and integral terms
-      Kp *= 0.95;
-      Ki *= 0.95;
-    }
-
-    // Limit Kp and Ki to reasonable ranges
-    Kp = constrain(Kp, 0.5, 10);
-    Ki = constrain(Ki, 0.1, 20);
-
-    // Update PID controller with new parameters
-    myPID.SetTunings(Kp, Ki, Kd);
-
-    // Reset for next adaptation cycle
+  if (ledOffState || isRamping || sensorError || thermalRunawayError) {
     sumError = 0;
     errorCount = 0;
-    adaptationLoopCount = 0;  // Reset loop counter
-  } else {
-    // Accumulate error for averaging
+    adaptationLoopCount = 0;
+    return;
+  }
+
+  // Adapt only when close to target temperature (steady state)
+  if (abs(Setpoint - Input) < 15) {
     sumError += (Setpoint - Input);
     errorCount++;
+    adaptationLoopCount++;
+  }
+
+  if (adaptationLoopCount >= ADAPT_LOOP_THRESHOLD) {
+    if (errorCount > 0) {
+      float avgError = sumError / errorCount;
+      if (abs(avgError) > 5) {
+        Kp *= 1.1;
+        Ki *= 1.1;
+      } else if (abs(avgError) < 2) {
+        Kp *= 0.95;
+        Ki *= 0.95;
+      }
+      Kp = constrain(Kp, 0.5, 10.0);
+      Ki = constrain(Ki, 0.1, 20.0);
+      myPID.SetTunings(Kp, Ki, Kd);
+    }
+    sumError = 0;
+    errorCount = 0;
+    adaptationLoopCount = 0;
   }
 }
 
 void updatePID() {
-  Input = currentTemp;
+  Input = filteredTemp;
   Setpoint = isRamping ? calculateRampSetpoint() : knob;
   myPID.Compute();
   pwm = Output;
 }
 
 void controlIronAndLED() {
+  if (sensorError || thermalRunawayError) {
+    pwm = 0;
+    analogWrite(IRON_PIN, 0);
+    
+    // Safety error alarm and flash pattern
+    static unsigned long lastErrorToggle = 0;
+    static bool errorToggleState = false;
+    if (millis() - lastErrorToggle > 250) {
+      errorToggleState = !errorToggleState;
+      lastErrorToggle = millis();
+      if (errorToggleState) {
+        setLEDColor(COLOR_HEATING);
+        tone(BUZZ_PIN, 1200, 100);
+      } else {
+        setLEDColor(COLOR_OFF);
+        noTone(BUZZ_PIN);
+      }
+    }
+    return;
+  }
+
   if (ledOffState) {
     pwm = 0;
     setLEDColor(COLOR_OFF);
-  } else if (isRamping) {
-    setLEDColor(COLOR_RAMPING);
-  } else if (currentTemp < Setpoint - 10) {
-    setLEDColor(COLOR_HEATING);
-  } else if (currentTemp >= Setpoint - 10 && currentTemp <= Setpoint + 10) {
-    setLEDColor(COLOR_READY);
-  } else if (currentTemp > Setpoint + 10) {
-    setLEDColor(COLOR_COOLING);
-  }
+  } else {
+    // Overshoot prevention: cut power if temperature goes above Setpoint + overshoot limit
+    if (currentTemp > (Setpoint + MAX_OVERSHOOT)) {
+      pwm = 0;
+    }
 
-  // Warning for very high temperatures
-  if (currentTemp > MAX_TEMP - 50) {
-    setLEDColor(COLOR_WARNING);
+    if (isRamping) {
+      setLEDColor(COLOR_RAMPING);
+    } else if (currentTemp < Setpoint - 10) {
+      setLEDColor(COLOR_HEATING);
+    } else if (currentTemp >= Setpoint - 10 && currentTemp <= Setpoint + 10) {
+      setLEDColor(COLOR_READY);
+    } else if (currentTemp > Setpoint + 10) {
+      setLEDColor(COLOR_COOLING);
+    }
+
+    // Warning for very high temperatures
+    if (currentTemp > MAX_TEMP - 50) {
+      setLEDColor(COLOR_WARNING);
+    }
   }
 
   analogWrite(IRON_PIN, pwm);
@@ -299,6 +402,38 @@ void updateDisplay() {
 
 #ifdef USE_OLED
     display.clearDisplay();
+    
+    if (sensorError) {
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println("SENSOR");
+      display.println("ERROR");
+      display.setTextSize(1);
+      display.println("Check sensor wire");
+      display.display();
+      return;
+    }
+    
+    if (thermalRunawayError) {
+      display.setTextSize(2);
+      display.setCursor(0, 0);
+      display.println("THERMAL");
+      display.println("RUNAWAY");
+      display.setTextSize(1);
+      display.println("System stopped");
+      display.display();
+      return;
+    }
+
+    if (autoShutoffMsgStartTime != 0 && millis() - autoShutoffMsgStartTime < 2000) {
+      display.setTextSize(2);
+      display.setCursor(0,0);
+      display.println("Auto Shut-off");
+      display.println("Activated");
+      display.display();
+      return;
+    }
+
     display.setTextSize(2);
     display.setCursor(0,0);
     if (isRamping) {
@@ -326,20 +461,49 @@ void updateDisplay() {
 
     display.display();
 #else
+    static bool lastWasError = false;
+    if (sensorError) {
+      if (!lastWasError) { lcd.clear(); lastWasError = true; }
+      lcd.setCursor(0, 0);
+      lcd.print("SENSOR ERROR    ");
+      lcd.setCursor(0, 1);
+      lcd.print("Check connection");
+      return;
+    }
+    
+    if (thermalRunawayError) {
+      if (!lastWasError) { lcd.clear(); lastWasError = true; }
+      lcd.setCursor(0, 0);
+      lcd.print("THERMAL ERROR   ");
+      lcd.setCursor(0, 1);
+      lcd.print("System Stopped  ");
+      return;
+    }
+
+    if (lastWasError) {
+      lcd.clear();
+      lastWasError = false;
+    }
+
+    if (autoShutoffMsgStartTime != 0 && millis() - autoShutoffMsgStartTime < 2000) {
+      lcd.setCursor(0, 0);
+      lcd.print("Auto Shut-off   ");
+      lcd.setCursor(0, 1);
+      lcd.print("Activated       ");
+      return;
+    }
+
     lcd.setCursor(0, 0);
     if (isRamping) {
       lcd.print("RAMP ");
       int remainingTime = (RAMP_DURATION - (currentMillis - rampStartTime)) / 1000;
       if (remainingTime < 0) remainingTime = 0;
       lcd.setCursor(0, 1);
-      lcd.print(remainingTime);
-      lcd.print("s   ");
+      lcd.print(String(remainingTime) + "s   ");
     } else {
       lcd.print(ledOffState ? "OFF  " : "SET  ");
       lcd.setCursor(0, 1);
-      lcd.print(ledOffState ? "---" : String(knob));
-      lcd.print((char)223);
-      lcd.print("C ");
+      lcd.print(ledOffState ? "--- " : String(knob) + (char)223 + "C ");
     }
 
     bigNum.displayLargeInt(currentTempAvg, 6, 0, 3, false);
@@ -350,28 +514,49 @@ void updateDisplay() {
 }
 
 void handleButtonPress() {
-  int buttonState = digitalRead(BUTTON_PIN);
-  if (buttonState != lastButtonState && buttonState == LOW) {
-    if (ledOffState) {
-      ledOffState = false;
-      digitalWrite(LED_OFF_PIN, LOW);
-      beep();
-    } else if (!isRamping) {
-      startRamping();
-    } else {
-      ledOffState = true;
-      isRamping = false;
-      digitalWrite(LED_OFF_PIN, HIGH);
-    }
-    lastActivityTime = millis(); // Update activity time
+  int reading = digitalRead(BUTTON_PIN);
+  static unsigned long lastDebounceTime = 0;
+  static int lastStableState = HIGH;
+
+  if (reading != lastButtonState) {
+    lastDebounceTime = millis();
   }
-  lastButtonState = buttonState;
+
+  if ((millis() - lastDebounceTime) > 50) {
+    if (reading != lastStableState) {
+      lastStableState = reading;
+      if (lastStableState == LOW) {
+        if (sensorError || thermalRunawayError) {
+          // Clear error on button press to retry
+          sensorError = false;
+          thermalRunawayError = false;
+          lastThermalCheckTime = millis();
+          lastThermalTemp = currentTemp;
+          beep(200);
+        } else if (ledOffState) {
+          ledOffState = false;
+          digitalWrite(LED_OFF_PIN, LOW);
+          beep(100);
+        } else if (!isRamping) {
+          startRamping();
+        } else {
+          ledOffState = true;
+          isRamping = false;
+          digitalWrite(LED_OFF_PIN, HIGH);
+          beep(50);
+        }
+        lastActivityTime = millis();
+      }
+    }
+  }
+  lastButtonState = reading;
 }
 
 void startRamping() {
   isRamping = true;
   rampStartTime = millis();
   originalSetpoint = knob;
+  beep(150);
 }
 
 int calculateRampSetpoint() {
@@ -389,16 +574,7 @@ int calculateRampSetpoint() {
 void handleRamping() {
   if (isRamping && millis() - rampStartTime > RAMP_DURATION) {
     isRamping = false;
-    beep(); // Alert user that ramping is complete
-  }
-}
-
-void beep() {
-  for (int i = 0; i < 255; i++) {
-    tone(BUZZ_PIN, 1000);
-    delayMicroseconds(125);
-    noTone(BUZZ_PIN);
-    delayMicroseconds(125);
+    beep(300); // Long beep to alert user that ramping completed
   }
 }
 
@@ -407,22 +583,8 @@ void checkAutoShutoff() {
     ledOffState = true;
     digitalWrite(LED_OFF_PIN, HIGH);
     setLEDColor(COLOR_OFF);
-    beep(); // Alert user of auto-shutoff
-#ifdef USE_OLED
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(0,0);
-    display.println("Auto Shut-off");
-    display.println("Activated");
-    display.display();
-#else
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Auto Shut-off");
-    lcd.setCursor(0, 1);
-    lcd.print("Activated");
-#endif
-    delay(2000); // Show message for 2 seconds
+    beep(200);
+    autoShutoffMsgStartTime = millis();
     lastActivityTime = millis(); // Reset activity timer
   }
 }
