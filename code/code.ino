@@ -541,46 +541,62 @@ void updateDisplay() {
 #ifdef USE_OLED
     if (inMenu) {
       display.clearDisplay();
+      
+      // Settings header title bar
       display.setTextSize(1);
       display.setCursor(0, 0);
-      display.println(F("--- SETTINGS MENU ---"));
+      display.println(F("SETTINGS"));
+      display.drawFastHLine(0, 9, 128, SSD1306_WHITE);
       
-      for (int i = 0; i < 5; i++) {
-        display.setCursor(0, 12 + (i * 10));
-        if (menuIndex == i) {
-          display.print(editMode ? F("* ") : F("> "));
-        } else {
-          display.print(F("  "));
-        }
-        
-        switch (i) {
-          case 0:
-            display.print(F("Sleep Temp: "));
-            {
-              int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
-              display.print(temp);
-              display.print(isFahrenheit ? F("F") : F("C"));
-            }
-            break;
-          case 1:
-            display.print(F("Sleep Time: "));
-            if (sleepTimeSetting == 0) display.print(F("Disabled"));
-            else { display.print(sleepTimeSetting); display.print(F(" min")); }
-            break;
-          case 2:
-            display.print(F("Off Time:   "));
-            display.print(offTimeSetting);
-            display.print(F(" min"));
-            break;
-          case 3:
-            display.print(F("Temp Unit:  "));
-            display.print(isFahrenheit ? F("Fahrenheit") : F("Celsius"));
-            break;
-          case 4:
-            display.print(F("Save & Exit"));
-            break;
-        }
+      // Large setting name
+      display.setTextSize(2);
+      display.setCursor(0, 15);
+      switch (menuIndex) {
+        case 0: display.print(F("Sleep Temp")); break;
+        case 1: display.print(F("Sleep Time")); break;
+        case 2: display.print(F("Off Time")); break;
+        case 3: display.print(F("Temp Unit")); break;
+        case 4: display.print(F("Save & Exit")); break;
       }
+      
+      // Large setting value
+      display.setTextSize(3);
+      display.setCursor(8, 38);
+      
+      if (editMode) {
+        display.print(F("["));
+      } else {
+        display.print(F(" "));
+      }
+      
+      switch (menuIndex) {
+        case 0:
+          {
+            int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
+            display.print(temp);
+            display.print(isFahrenheit ? F("F") : F("C"));
+          }
+          break;
+        case 1:
+          if (sleepTimeSetting == 0) display.print(F("OFF"));
+          else { display.print(sleepTimeSetting); display.print(F("m")); }
+          break;
+        case 2:
+          display.print(offTimeSetting);
+          display.print(F("m"));
+          break;
+        case 3:
+          display.print(isFahrenheit ? F("F") : F("C"));
+          break;
+        case 4:
+          display.print(F("EXIT"));
+          break;
+      }
+      
+      if (editMode) {
+        display.print(F("]"));
+      }
+      
       display.display();
       return;
     }
@@ -869,7 +885,11 @@ void handleButtonPress() {
         menuIndex = 0;
         pwm = 0;
         analogWrite(IRON_PIN, 0);
+        isSleeping = false;
+        isBoostActive = false;
+        isRamping = false;
       } else {
+        editMode = false; // Always clear edit mode on exit
         saveMenuSettings();
       }
       beep(300); // Long beep indicator
@@ -905,12 +925,12 @@ void handleRamping() {
 }
 
 void checkAutoShutoff() {
-  if (ledOffState || inMenu) return;
+  if (ledOffState) return;
 
   unsigned long idleTime = millis() - lastActivityTime;
 
-  // Inactivity Sleep trigger
-  if (sleepTimeSetting > 0) {
+  // Inactivity Sleep trigger (only if not in menu)
+  if (sleepTimeSetting > 0 && !inMenu) {
     unsigned long sleepTimeoutVal = (unsigned long)sleepTimeSetting * 60000;
     if (idleTime > sleepTimeoutVal) {
       if (!isSleeping && !isRamping && !isBoostActive) {
@@ -924,12 +944,14 @@ void checkAutoShutoff() {
     isSleeping = false;
   }
 
-  // Auto shutoff after offTimeSetting minutes total inactivity
+  // Auto shutoff after offTimeSetting minutes total inactivity (applies in menu too)
   unsigned long shutoffTimeoutVal = (unsigned long)offTimeSetting * 60000;
   if (idleTime > shutoffTimeoutVal) {
     ledOffState = true;
     isSleeping = false;
     isBoostActive = false;
+    inMenu = false;
+    editMode = false;
     digitalWrite(LED_OFF_PIN, HIGH);
     setLEDColor(COLOR_OFF);
     beep(200);
@@ -988,7 +1010,7 @@ void adjustMenuValue(int dir) {
 void checkClicks() {
   if (clickCount > 0 && (millis() - lastClickTime > 250)) {
     if (inMenu) {
-      if (clickCount == 1) {
+      if (clickCount >= 1) {
         if (menuIndex == 4) {
           // Exit option selected
           inMenu = false;
