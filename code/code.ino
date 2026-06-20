@@ -59,9 +59,9 @@ unsigned long rampStartTime = 0;
 int originalSetpoint = 0;
 
 // Sleep and Boost Settings
-const int SLEEP_TEMP = 150;
-const unsigned long SLEEP_TIMEOUT = 3 * 60000; // 3 minutes
-const unsigned long SHUTOFF_TIMEOUT = 7 * 60000; // 7 minutes after sleep
+int sleepTempSetting = 150;
+int sleepTimeSetting = 3; // minutes (0 = Disabled)
+int offTimeSetting = 10;  // minutes
 volatile bool isSleeping = false;
 
 bool isBoostActive = false;
@@ -72,6 +72,11 @@ const int BOOST_TEMP_OFFSET = 50; // +50°C
 // Button Dispatcher variables
 volatile int clickCount = 0;
 volatile unsigned long lastClickTime = 0;
+
+// Configuration Menu variables
+volatile bool inMenu = false;
+volatile bool editMode = false;
+volatile int menuIndex = 0;
 
 // LED Colors
 const uint32_t COLOR_OFF = 0x000000;      // Black (OFF)
@@ -170,6 +175,8 @@ void loop() {
     isRamping = false;
     isSleeping = false;
     isBoostActive = false;
+    inMenu = false;
+    editMode = false;
   } else {
     updatePID();
     checkSafety();
@@ -230,6 +237,10 @@ void initializeWS2812() {
   pixel.show(); // Initialize all pixels to 'off'
 }
 
+#define EEPROM_SLEEP_TEMP_ADDRESS 3
+#define EEPROM_SLEEP_TIME_ADDRESS 5
+#define EEPROM_OFF_TIME_ADDRESS 6
+
 void loadSavedTemperature() {
   int savedTemp = (EEPROM.read(EEPROM_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_TEMP_ADDRESS + 1);
   if (savedTemp >= MIN_KNOB && savedTemp <= MAX_KNOB) {
@@ -238,16 +249,46 @@ void loadSavedTemperature() {
   
   // Load unit setting
   byte unit = EEPROM.read(EEPROM_UNIT_ADDRESS);
-  if (unit == 1) {
-    isFahrenheit = true;
+  isFahrenheit = (unit == 1);
+
+  // Load Sleep Temp
+  int savedSleepTemp = (EEPROM.read(EEPROM_SLEEP_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_SLEEP_TEMP_ADDRESS + 1);
+  if (savedSleepTemp >= 100 && savedSleepTemp <= 200) {
+    sleepTempSetting = savedSleepTemp;
   } else {
-    isFahrenheit = false;
+    sleepTempSetting = 150;
+  }
+
+  // Load Sleep Time
+  byte savedSleepTime = EEPROM.read(EEPROM_SLEEP_TIME_ADDRESS);
+  if (savedSleepTime <= 10) {
+    sleepTimeSetting = savedSleepTime;
+  } else {
+    sleepTimeSetting = 3;
+  }
+
+  // Load Off Time
+  byte savedOffTime = EEPROM.read(EEPROM_OFF_TIME_ADDRESS);
+  if (savedOffTime >= 1 && savedOffTime <= 20) {
+    offTimeSetting = savedOffTime;
+  } else {
+    offTimeSetting = 10;
   }
 }
 
 void saveTemperature() {
   EEPROM.update(EEPROM_TEMP_ADDRESS, knob >> 8);
   EEPROM.update(EEPROM_TEMP_ADDRESS + 1, knob & 0xFF);
+}
+
+void saveMenuSettings() {
+  EEPROM.update(EEPROM_UNIT_ADDRESS, isFahrenheit ? 1 : 0);
+  
+  EEPROM.update(EEPROM_SLEEP_TEMP_ADDRESS, sleepTempSetting >> 8);
+  EEPROM.update(EEPROM_SLEEP_TEMP_ADDRESS + 1, sleepTempSetting & 0xFF);
+  
+  EEPROM.update(EEPROM_SLEEP_TIME_ADDRESS, sleepTimeSetting);
+  EEPROM.update(EEPROM_OFF_TIME_ADDRESS, offTimeSetting);
 }
 
 void encoderISR() {
@@ -257,6 +298,17 @@ void encoderISR() {
     isSleeping = false;
     lastActivityTime = millis();
     return; // Wake up first without changing temperature
+  }
+
+  if (inMenu) {
+    int dir = (digitalRead(ENCODER_DT_PIN) == HIGH) ? 1 : -1;
+    if (editMode) {
+      adjustMenuValue(dir);
+    } else {
+      menuIndex = constrain(menuIndex + dir, 0, 4);
+    }
+    lastActivityTime = millis();
+    return;
   }
   
   if (digitalRead(ENCODER_DT_PIN) == HIGH) {
@@ -375,8 +427,8 @@ void updatePID() {
     Setpoint = calculateRampSetpoint();
   } else if (isBoostActive) {
     Setpoint = constrain(knob + BOOST_TEMP_OFFSET, MIN_KNOB, MAX_KNOB);
-  } else if (isSleeping) {
-    Setpoint = SLEEP_TEMP;
+  } else if (isSleeping && sleepTimeSetting > 0) {
+    Setpoint = sleepTempSetting;
   } else {
     Setpoint = knob;
   }
@@ -416,7 +468,7 @@ void controlIronAndLED() {
   // Synchronize LED OFF pin with system state
   digitalWrite(LED_OFF_PIN, ledOffState ? HIGH : LOW);
 
-  if (ledOffState) {
+  if (ledOffState && !inMenu) {
     pwm = 0;
     setLEDColor(COLOR_OFF);
 
@@ -427,6 +479,12 @@ void controlIronAndLED() {
     } else {
       lcd.backlight();
     }
+#endif
+  } else if (inMenu) {
+    pwm = 0;
+    setLEDColor(COLOR_OFF);
+#ifndef USE_OLED
+    lcd.backlight();
 #endif
   } else if (isSleeping) {
     pulseSleepLED();
@@ -476,6 +534,52 @@ void updateDisplay() {
     previousMillis = currentMillis;
 
 #ifdef USE_OLED
+    if (inMenu) {
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setCursor(0, 0);
+      display.println("--- SETTINGS MENU ---");
+      
+      for (int i = 0; i < 5; i++) {
+        display.setCursor(0, 12 + (i * 10));
+        if (menuIndex == i) {
+          display.print(editMode ? "* " : "> ");
+        } else {
+          display.print("  ");
+        }
+        
+        switch (i) {
+          case 0:
+            display.print("Sleep Temp: ");
+            {
+              int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
+              display.print(temp);
+              display.print(isFahrenheit ? "F" : "C");
+            }
+            break;
+          case 1:
+            display.print("Sleep Time: ");
+            if (sleepTimeSetting == 0) display.print("Disabled");
+            else { display.print(sleepTimeSetting); display.print(" min"); }
+            break;
+          case 2:
+            display.print("Off Time:   ");
+            display.print(offTimeSetting);
+            display.print(" min");
+            break;
+          case 3:
+            display.print("Temp Unit:  ");
+            display.print(isFahrenheit ? "Fahrenheit" : "Celsius");
+            break;
+          case 4:
+            display.print("Save & Exit");
+            break;
+        }
+      }
+      display.display();
+      return;
+    }
+
     display.clearDisplay();
     
     if (sensorError) {
@@ -528,7 +632,7 @@ void updateDisplay() {
     } else if (isSleeping) {
       display.print("SLEEP");
       display.setCursor(74, 0);
-      int targetTemp = isFahrenheit ? (int)(SLEEP_TEMP * 1.8 + 32) : SLEEP_TEMP;
+      int targetTemp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
       display.print(targetTemp);
       display.setTextSize(1);
       display.print((char)247);
@@ -561,6 +665,52 @@ void updateDisplay() {
     display.display();
 #else
     static bool lastWasError = false;
+    
+    if (inMenu) {
+      if (!lastWasError) { lcd.clear(); lastWasError = true; }
+      lcd.setCursor(0, 0);
+      switch (menuIndex) {
+        case 0:
+          lcd.print("1. Sleep Temp   ");
+          lcd.setCursor(0, 1);
+          {
+            int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
+            if (editMode) lcd.print("Edit: [" + String(temp) + (isFahrenheit ? "F" : "C") + "]   ");
+            else lcd.print("Value: " + String(temp) + (isFahrenheit ? "F" : "C") + "    ");
+          }
+          break;
+        case 1:
+          lcd.print("2. Sleep Time   ");
+          lcd.setCursor(0, 1);
+          if (sleepTimeSetting == 0) {
+            if (editMode) lcd.print("Edit: [Disabled]");
+            else lcd.print("Value: Disabled ");
+          } else {
+            if (editMode) lcd.print("Edit: [" + String(sleepTimeSetting) + "m]     ");
+            else lcd.print("Value: " + String(sleepTimeSetting) + "m      ");
+          }
+          break;
+        case 2:
+          lcd.print("3. Off Time     ");
+          lcd.setCursor(0, 1);
+          if (editMode) lcd.print("Edit: [" + String(offTimeSetting) + "m]     ");
+          else lcd.print("Value: " + String(offTimeSetting) + "m      ");
+          break;
+        case 3:
+          lcd.print("4. Temp Unit    ");
+          lcd.setCursor(0, 1);
+          if (editMode) lcd.print("Edit: [" + String(isFahrenheit ? "F" : "C") + "]       ");
+          else lcd.print("Value: " + String(isFahrenheit ? "Fahrenheit" : "Celsius") + " ");
+          break;
+        case 4:
+          lcd.print("5. Save & Exit  ");
+          lcd.setCursor(0, 1);
+          lcd.print("Click to exit   ");
+          break;
+      }
+      return;
+    }
+
     if (sensorError) {
       if (!lastWasError) { lcd.clear(); lastWasError = true; }
       lcd.setCursor(0, 0);
@@ -607,7 +757,7 @@ void updateDisplay() {
       } else if (isSleeping) {
         lcd.print("SLP ");
         lcd.setCursor(0, 1);
-        int targetTemp = isFahrenheit ? (int)(SLEEP_TEMP * 1.8 + 32) : SLEEP_TEMP;
+        int targetTemp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
         lcd.print("S" + String(targetTemp));
         if (targetTemp < 100) lcd.print("  ");
         else if (targetTemp < 1000) lcd.print(" ");
@@ -660,9 +810,16 @@ void handleButtonPress() {
       } else {
         unsigned long pressDuration = millis() - buttonPressTime;
         if (pressDuration >= 1500) {
-          // Long press: Toggle unit setting
-          isFahrenheit = !isFahrenheit;
-          EEPROM.update(EEPROM_UNIT_ADDRESS, isFahrenheit ? 1 : 0);
+          // Long press: Toggle menu activation
+          inMenu = !inMenu;
+          if (inMenu) {
+            editMode = false;
+            menuIndex = 0;
+            pwm = 0;
+            analogWrite(IRON_PIN, 0);
+          } else {
+            saveMenuSettings();
+          }
           beep(300); // Long beep indicator
         } else {
           // Short press: Register click
@@ -703,22 +860,28 @@ void handleRamping() {
 }
 
 void checkAutoShutoff() {
-  if (ledOffState) return;
+  if (ledOffState || inMenu) return;
 
   unsigned long idleTime = millis() - lastActivityTime;
 
-  // Inactivity Sleep trigger (3 minutes)
-  if (idleTime > SLEEP_TIMEOUT) {
-    if (!isSleeping && !isRamping && !isBoostActive) {
-      isSleeping = true;
-      beep(150);
+  // Inactivity Sleep trigger
+  if (sleepTimeSetting > 0) {
+    unsigned long sleepTimeoutVal = (unsigned long)sleepTimeSetting * 60000;
+    if (idleTime > sleepTimeoutVal) {
+      if (!isSleeping && !isRamping && !isBoostActive) {
+        isSleeping = true;
+        beep(150);
+      }
+    } else {
+      isSleeping = false;
     }
   } else {
     isSleeping = false;
   }
 
-  // Auto shutoff after 10 minutes total inactivity
-  if (idleTime > AUTO_SHUTOFF_TIME) {
+  // Auto shutoff after offTimeSetting minutes total inactivity
+  unsigned long shutoffTimeoutVal = (unsigned long)offTimeSetting * 60000;
+  if (idleTime > shutoffTimeoutVal) {
     ledOffState = true;
     isSleeping = false;
     isBoostActive = false;
@@ -756,8 +919,46 @@ void handleBoost() {
   }
 }
 
+void adjustMenuValue(int dir) {
+  switch (menuIndex) {
+    case 0: // Sleep Temp
+      sleepTempSetting = constrain(sleepTempSetting + (dir * 5), 100, 200);
+      break;
+    case 1: // Sleep Time (minutes, 0 = Disabled)
+      sleepTimeSetting = constrain(sleepTimeSetting + dir, 0, 10);
+      break;
+    case 2: // Off Time (minutes)
+      offTimeSetting = constrain(offTimeSetting + dir, 1, 20);
+      // Ensure shutoff time is strictly greater than sleep time
+      if (sleepTimeSetting > 0 && offTimeSetting <= sleepTimeSetting) {
+        offTimeSetting = sleepTimeSetting + 1;
+      }
+      break;
+    case 3: // Temp Unit
+      isFahrenheit = !isFahrenheit;
+      break;
+  }
+}
+
 void checkClicks() {
   if (clickCount > 0 && (millis() - lastClickTime > 250)) {
+    if (inMenu) {
+      if (clickCount == 1) {
+        if (menuIndex == 4) {
+          // Exit option selected
+          inMenu = false;
+          editMode = false;
+          saveMenuSettings();
+          beep(300);
+        } else {
+          editMode = !editMode;
+          beep(100);
+        }
+      }
+      clickCount = 0;
+      return;
+    }
+
     if (clickCount == 1) {
       if (isSleeping) {
         isSleeping = false;
