@@ -28,10 +28,10 @@ The **Soldering Iron Controller** is an Arduino-based system designed to precise
 - Precise temperature control (100°C to 500°C range)
 - PID-based temperature regulation with adaptive tuning (steady-state only)
 - Exponential Moving Average (EMA) filtering for stable PID inputs
-- Temperature ramping (rapid heating to 500°C for 20 seconds)
+- Temperature ramping (rapid heating with customizable duration and target temperature)
 - Two-stage standby: Sleep Mode (heats to 150°C or sleep setting) and Auto Shut-Off
 - Boost Mode (+50°C for 45 seconds via double-click)
-- Configuration Menu (Sleep Temp, Sleep Time, Off Time, Temp Unit) with infinite scrolling loop
+- Configuration Menu (Sleep Temp, Sleep Time, Off Time, Temp Unit, Ramp Time, Ramp Temp) with infinite scrolling loop
 - OLED (SSD1306) or 16x2 I2C LCD display support
 - WS2812 RGB LED for status indication (pulsing blue in sleep, warning colors)
 - Software-debounced input controls (50ms window)

@@ -31,12 +31,12 @@ flowchart TD
     ToggleMenu --> Loop
     
     CheckMenuState -- Yes --> MenuMode[Menu Mode: pwm = 0, LED Off]
-    MenuMode --> UpdateMenuDisp[Render Menu: Sleep Temp/Time, Off Time, Temp Unit]
+    MenuMode --> UpdateMenuDisp[Render Menu: Sleep Temp/Time, Off Time, Temp Unit, Ramp Time, Ramp Temp]
     UpdateMenuDisp --> CheckMenuClicks{Button Clicked?}
     CheckMenuClicks -- Yes --> ToggleEdit[Toggle editMode]
     CheckMenuClicks -- No --> CheckMenuRotary{Rotary Turned?}
     ToggleEdit --> Loop
-    CheckMenuRotary -- Yes --> AdjMenu[If editMode: Adjust Setting Value <br> Else: Scroll menuIndex 0-3 loop]
+    CheckMenuRotary -- Yes --> AdjMenu[If editMode: Adjust Setting Value <br> Else: Scroll menuIndex 0-5 loop]
     CheckMenuRotary -- No --> Loop
     AdjMenu --> Loop
 
