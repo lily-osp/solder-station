@@ -28,6 +28,8 @@
 #define EEPROM_SLEEP_TEMP_ADDRESS 3
 #define EEPROM_SLEEP_TIME_ADDRESS 5
 #define EEPROM_OFF_TIME_ADDRESS 6
+#define EEPROM_RAMP_TIME_ADDRESS 7
+#define EEPROM_RAMP_TEMP_ADDRESS 8
 
 // Constants
 const int MIN_TEMP = 28;
@@ -56,7 +58,8 @@ double Kp = 2.0, Ki = 5.0, Kd = 1.0;
 PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 // Ramping Variables
-const unsigned long RAMP_DURATION = 20000; // 20 seconds for ramping
+volatile int rampTimeSetting = 20; // seconds
+volatile int rampTempSetting = 500; // C
 bool isRamping = false;
 unsigned long rampStartTime = 0;
 int originalSetpoint = 0;
@@ -247,7 +250,8 @@ void initializeWS2812() {
 }
 
 void loadSavedTemperature() {
-  int savedTemp = (EEPROM.read(EEPROM_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_TEMP_ADDRESS + 1);
+  int savedTemp = 0;
+  EEPROM.get(EEPROM_TEMP_ADDRESS, savedTemp);
   if (savedTemp >= MIN_KNOB && savedTemp <= MAX_KNOB) {
     knob = savedTemp;
   }
@@ -257,7 +261,8 @@ void loadSavedTemperature() {
   isFahrenheit = (unit == 1);
 
   // Load Sleep Temp
-  int savedSleepTemp = (EEPROM.read(EEPROM_SLEEP_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_SLEEP_TEMP_ADDRESS + 1);
+  int savedSleepTemp = 0;
+  EEPROM.get(EEPROM_SLEEP_TEMP_ADDRESS, savedSleepTemp);
   if (savedSleepTemp >= 100 && savedSleepTemp <= 200) {
     sleepTempSetting = savedSleepTemp;
   } else {
@@ -279,21 +284,36 @@ void loadSavedTemperature() {
   } else {
     offTimeSetting = 10;
   }
+
+  // Load Ramp Time
+  byte savedRampTime = EEPROM.read(EEPROM_RAMP_TIME_ADDRESS);
+  if (savedRampTime >= 10 && savedRampTime <= 60) {
+    rampTimeSetting = savedRampTime;
+  } else {
+    rampTimeSetting = 20;
+  }
+
+  // Load Ramp Temp
+  int savedRampTemp = 0;
+  EEPROM.get(EEPROM_RAMP_TEMP_ADDRESS, savedRampTemp);
+  if (savedRampTemp >= 300 && savedRampTemp <= 500) {
+    rampTempSetting = savedRampTemp;
+  } else {
+    rampTempSetting = 500;
+  }
 }
 
 void saveTemperature() {
-  EEPROM.update(EEPROM_TEMP_ADDRESS, knob >> 8);
-  EEPROM.update(EEPROM_TEMP_ADDRESS + 1, knob & 0xFF);
+  EEPROM.put(EEPROM_TEMP_ADDRESS, (int)knob);
 }
 
 void saveMenuSettings() {
-  EEPROM.update(EEPROM_UNIT_ADDRESS, isFahrenheit ? 1 : 0);
-  
-  EEPROM.update(EEPROM_SLEEP_TEMP_ADDRESS, sleepTempSetting >> 8);
-  EEPROM.update(EEPROM_SLEEP_TEMP_ADDRESS + 1, sleepTempSetting & 0xFF);
-  
-  EEPROM.update(EEPROM_SLEEP_TIME_ADDRESS, sleepTimeSetting);
-  EEPROM.update(EEPROM_OFF_TIME_ADDRESS, offTimeSetting);
+  EEPROM.put(EEPROM_UNIT_ADDRESS, (byte)(isFahrenheit ? 1 : 0));
+  EEPROM.put(EEPROM_SLEEP_TEMP_ADDRESS, (int)sleepTempSetting);
+  EEPROM.put(EEPROM_SLEEP_TIME_ADDRESS, (byte)sleepTimeSetting);
+  EEPROM.put(EEPROM_OFF_TIME_ADDRESS, (byte)offTimeSetting);
+  EEPROM.put(EEPROM_RAMP_TIME_ADDRESS, (byte)rampTimeSetting);
+  EEPROM.put(EEPROM_RAMP_TEMP_ADDRESS, (int)rampTempSetting);
 }
 
 void encoderISR() {
@@ -319,11 +339,17 @@ void encoderISR() {
         case 3: // Temp Unit
           isFahrenheit = !isFahrenheit;
           break;
+        case 4: // Ramp Time
+          rampTimeSetting = constrain(rampTimeSetting + dir, 10, 60);
+          break;
+        case 5: // Ramp Temp
+          rampTempSetting = constrain(rampTempSetting + (dir * 5), 300, 500);
+          break;
       }
     } else {
       menuIndex += dir;
-      if (menuIndex > 3) menuIndex = 0;
-      else if (menuIndex < 0) menuIndex = 3;
+      if (menuIndex > 5) menuIndex = 0;
+      else if (menuIndex < 0) menuIndex = 5;
     }
     lastActivityTime = millis();
     return;
@@ -577,11 +603,13 @@ void updateDisplay() {
         case 1: display.print(F("Sleep Time")); break;
         case 2: display.print(F("Off Time")); break;
         case 3: display.print(F("Temp Unit")); break;
+        case 4: display.print(F("Ramp Time")); break;
+        case 5: display.print(F("Ramp Temp")); break;
       }
       
       // Scrollbar on the right (x=124 to x=127, y=12 to y=60)
       display.drawFastVLine(126, 12, 48, SSD1306_WHITE);
-      display.fillRect(125, 12 + menuIndex * 12, 3, 12, SSD1306_WHITE);
+      display.fillRect(125, 12 + menuIndex * 8, 3, 8, SSD1306_WHITE);
 
       // Large setting value block (inverted color highlight if in editMode)
       if (editMode) {
@@ -611,6 +639,17 @@ void updateDisplay() {
           break;
         case 3:
           display.print(isFahrenheit ? F("F") : F("C"));
+          break;
+        case 4:
+          display.print(rampTimeSetting);
+          display.print(F("s"));
+          break;
+        case 5:
+          {
+            int temp = isFahrenheit ? (int)(rampTempSetting * 1.8 + 32) : rampTempSetting;
+            display.print(temp);
+            display.print(isFahrenheit ? F("F") : F("C"));
+          }
           break;
       }
       
@@ -658,7 +697,7 @@ void updateDisplay() {
     if (isRamping || isBoostActive) {
       bool isRamp = isRamping;
       display.print(isRamp ? F("RAMP ") : F("BOOST "));
-      int remainingTime = ((isRamp ? RAMP_DURATION : BOOST_DURATION) - (currentMillis - (isRamp ? rampStartTime : boostStartTime))) / 1000;
+      int remainingTime = ((isRamp ? ((unsigned long)rampTimeSetting * 1000) : BOOST_DURATION) - (currentMillis - (isRamp ? rampStartTime : boostStartTime))) / 1000;
       if (remainingTime < 0) remainingTime = 0;
       display.print(remainingTime);
       display.print(F("s"));
@@ -771,6 +810,35 @@ void updateDisplay() {
             lcd.print(isFahrenheit ? F("Value: Fahrenheit") : F("Value: Celsius   "));
           }
           break;
+        case 4:
+          lcd.print(F("5. Ramp Time    "));
+          lcd.setCursor(0, 1);
+          if (editMode) {
+            lcd.print(F("Edit: ["));
+            lcd.print(rampTimeSetting);
+            lcd.print(F("s]     "));
+          } else {
+            lcd.print(F("Value: "));
+            lcd.print(rampTimeSetting);
+            lcd.print(F("s      "));
+          }
+          break;
+        case 5:
+          lcd.print(F("6. Ramp Temp    "));
+          lcd.setCursor(0, 1);
+          {
+            int temp = isFahrenheit ? (int)(rampTempSetting * 1.8 + 32) : rampTempSetting;
+            if (editMode) {
+              lcd.print(F("Edit: ["));
+              lcd.print(temp);
+              lcd.print(isFahrenheit ? F("F]   ") : F("C]   "));
+            } else {
+              lcd.print(F("Value: "));
+              lcd.print(temp);
+              lcd.print(isFahrenheit ? F("F    ") : F("C    "));
+            }
+          }
+          break;
       }
       return;
     }
@@ -809,7 +877,7 @@ void updateDisplay() {
     lcd.setCursor(0, 0);
     if (isRamping) {
       lcd.print(F("RAMP "));
-      int remainingTime = (RAMP_DURATION - (currentMillis - rampStartTime)) / 1000;
+      int remainingTime = (((unsigned long)rampTimeSetting * 1000) - (currentMillis - rampStartTime)) / 1000;
       if (remainingTime < 0) remainingTime = 0;
       lcd.setCursor(0, 1);
       lcd.print(remainingTime);
@@ -926,18 +994,20 @@ void startRamping() {
 
 int calculateRampSetpoint() {
   unsigned long elapsedTime = millis() - rampStartTime;
-  if (elapsedTime > RAMP_DURATION) {
+  unsigned long rampDurationMs = (unsigned long)rampTimeSetting * 1000;
+  if (elapsedTime > rampDurationMs) {
     isRamping = false;
     return originalSetpoint;
   }
 
-  int rampTarget = MAX_TEMP;
-  float progress = (float)elapsedTime / RAMP_DURATION;
+  int rampTarget = rampTempSetting;
+  float progress = (float)elapsedTime / rampDurationMs;
   return originalSetpoint + (rampTarget - originalSetpoint) * progress;
 }
 
 void handleRamping() {
-  if (isRamping && millis() - rampStartTime > RAMP_DURATION) {
+  unsigned long rampDurationMs = (unsigned long)rampTimeSetting * 1000;
+  if (isRamping && millis() - rampStartTime > rampDurationMs) {
     isRamping = false;
     beep(300); // Long beep to alert user that ramping completed
   }
