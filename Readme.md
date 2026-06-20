@@ -109,10 +109,10 @@ Ensure all components share a common ground and proper power connections.
    - **Red**: Heating
    - **Green**: Ready
    - **Blue**: Cooling
-   - **Yellow**: Warning (near max temperature)
+   - **Yellow**: Warning (near max temperature, or dangerously hot when OFF)
    - **Purple**: Ramping
    - **Flashing Red/Beeping**: Error State
-   - **Off**: Iron off or auto-shutoff
+   - **Off**: Iron off or auto-shutoff (unless still dangerously hot)
 4. Press the encoder button to toggle the iron on/off, start ramping mode, or clear active errors.
 
 ## Temperature Control System
