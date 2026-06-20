@@ -1,0 +1,21 @@
+# Database / Local memory
+memory.db
+
+# Arduino Build artifacts
+build/
+bin/
+*.elf
+*.hex
+*.bin
+
+# Local configurations and IDE files
+.vscode/
+.idea/
+.project
+.cproject
+*.swp
+*.bak
+*~
+
+# Log files
+*.log
