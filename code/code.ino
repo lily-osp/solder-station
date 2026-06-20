@@ -579,16 +579,20 @@ void updateDisplay() {
         case 3: display.print(F("Temp Unit")); break;
       }
       
-      // Large setting value
-      display.setTextSize(3);
-      display.setCursor(8, 38);
-      
+      // Scrollbar on the right (x=124 to x=127, y=12 to y=60)
+      display.drawFastVLine(126, 12, 48, SSD1306_WHITE);
+      display.fillRect(125, 12 + menuIndex * 12, 3, 12, SSD1306_WHITE);
+
+      // Large setting value block (inverted color highlight if in editMode)
       if (editMode) {
-        display.print(F("["));
+        display.fillRect(4, 38, 114, 26, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
       } else {
-        display.print(F(" "));
+        display.setTextColor(SSD1306_WHITE);
       }
       
+      display.setTextSize(3);
+      display.setCursor(8, 40);
       switch (menuIndex) {
         case 0:
           {
@@ -610,10 +614,7 @@ void updateDisplay() {
           break;
       }
       
-      if (editMode) {
-        display.print(F("]"));
-      }
-      
+      display.setTextColor(SSD1306_WHITE); // Reset text color
       display.display();
       return;
     }
@@ -651,53 +652,59 @@ void updateDisplay() {
       return;
     }
 
-    display.setTextSize(2);
-    display.setCursor(0,0);
-    if (isRamping) {
-      display.print(F("RAMP "));
-      int remainingTime = (RAMP_DURATION - (currentMillis - rampStartTime)) / 1000;
+    // Top Status Bar (mode and target setpoint)
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    if (isRamping || isBoostActive) {
+      bool isRamp = isRamping;
+      display.print(isRamp ? F("RAMP ") : F("BOOST "));
+      int remainingTime = ((isRamp ? RAMP_DURATION : BOOST_DURATION) - (currentMillis - (isRamp ? rampStartTime : boostStartTime))) / 1000;
       if (remainingTime < 0) remainingTime = 0;
-      display.setCursor(74, 0);
-      display.print(remainingTime);
-      display.print(F("s"));
-    } else if (isBoostActive) {
-      display.print(F("BOOST"));
-      int remainingTime = (BOOST_DURATION - (currentMillis - boostStartTime)) / 1000;
-      if (remainingTime < 0) remainingTime = 0;
-      display.setCursor(74, 0);
       display.print(remainingTime);
       display.print(F("s"));
     } else if (isSleeping) {
       display.print(F("SLEEP"));
-      display.setCursor(74, 0);
-      int targetTemp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
-      display.print(targetTemp);
-      display.setTextSize(1);
-      display.print((char)247);
-      display.print(isFahrenheit ? F("F") : F("C"));
     } else {
-      display.print(ledOffState ? F("OFF  ") : F("SET  "));
-      display.setCursor(74, 0);
-      int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
-      display.print(ledOffState ? F("---") : String(targetTemp));
-      display.setTextSize(1);
+      display.print(ledOffState ? F("OFF") : F("SET"));
+    }
+
+    // Draw small vertical divider line in the top bar
+    display.drawFastVLine(60, 0, 8, SSD1306_WHITE);
+
+    // Target setpoint on the right
+    display.setCursor(68, 0);
+    if (ledOffState && !isSleeping) {
+      display.print(F("---"));
+    } else {
+      int targetTemp = isSleeping ? sleepTempSetting : knob;
+      display.print(isFahrenheit ? (int)(targetTemp * 1.8 + 32) : targetTemp);
       display.print((char)247);
       display.print(isFahrenheit ? F("F") : F("C"));
     }
 
-    display.setTextSize(4);
-    display.setCursor(0, 28);
+    // Horizontal line below top bar
+    display.drawFastHLine(0, 10, 128, SSD1306_WHITE);
+
+    // Main Actual Temperature display (Centered)
     int actualTempDisp = isFahrenheit ? (int)(currentTempAvg * 1.8 + 32) : currentTempAvg;
-    display.print(actualTempDisp);
+    int xOffset = 22;
+    if (actualTempDisp < 10) xOffset = 40;
+    else if (actualTempDisp < 100) xOffset = 31;
+
     display.setTextSize(3);
+    display.setCursor(xOffset, 20);
+    display.print(actualTempDisp);
+    
+    // Degree symbol and unit (size 2)
+    display.setTextSize(2);
     display.print((char)247);
     display.print(isFahrenheit ? F("F") : F("C"));
 
-    // Draw power bar at the bottom when active
+    // Sleek Segmented/Smooth Power Bar at bottom
     if (!ledOffState && !sensorError && !thermalRunawayError) {
-      display.drawRect(0, 58, 128, 6, SSD1306_WHITE);
-      int barWidth = map(pwm, 0, MAX_PWM, 0, 126);
-      display.fillRect(1, 59, barWidth, 4, SSD1306_WHITE);
+      display.drawRect(4, 52, 120, 5, SSD1306_WHITE);
+      int barWidth = map(pwm, 0, MAX_PWM, 0, 118);
+      display.fillRect(5, 53, barWidth, 3, SSD1306_WHITE);
     }
 
     display.display();
