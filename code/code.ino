@@ -374,17 +374,7 @@ void controlIronAndLED() {
 
   if (ledOffState) {
     pwm = 0;
-    
-    // Warning and cooling status LED indicator when system is off
-    if (currentTempAvg > 50) {
-      if (currentTempAvg > MAX_TEMP - 50) {
-        setLEDColor(COLOR_WARNING);
-      } else {
-        setLEDColor(COLOR_COOLING);
-      }
-    } else {
-      setLEDColor(COLOR_OFF);
-    }
+    setLEDColor(COLOR_OFF);
 
 #ifndef USE_OLED
     // Manage LCD backlight in OFF state (keep backlight on while shutoff message is showing)
@@ -414,11 +404,11 @@ void controlIronAndLED() {
     } else if (currentTemp > Setpoint + 10) {
       setLEDColor(COLOR_COOLING);
     }
+  }
 
-    // Warning for very high temperatures
-    if (currentTemp > MAX_TEMP - 50) {
-      setLEDColor(COLOR_WARNING);
-    }
+  // Warning for very high temperatures
+  if (currentTemp > MAX_TEMP - 50) {
+    setLEDColor(COLOR_WARNING);
   }
 
   analogWrite(IRON_PIN, pwm);
