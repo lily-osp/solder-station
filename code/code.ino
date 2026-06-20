@@ -62,9 +62,9 @@ unsigned long rampStartTime = 0;
 int originalSetpoint = 0;
 
 // Sleep and Boost Settings
-int sleepTempSetting = 150;
-int sleepTimeSetting = 3; // minutes (0 = Disabled)
-int offTimeSetting = 10;  // minutes
+volatile int sleepTempSetting = 150;
+volatile int sleepTimeSetting = 3; // minutes (0 = Disabled)
+volatile int offTimeSetting = 10;  // minutes
 volatile bool isSleeping = false;
 
 bool isBoostActive = false;
@@ -125,7 +125,7 @@ int lastButtonState = HIGH;
 bool sensorError = false;
 bool thermalRunawayError = false;
 unsigned long autoShutoffMsgStartTime = 0;
-bool isFahrenheit = false;
+volatile bool isFahrenheit = false;
 
 double filteredTemp = 0.0;
 const float FILTER_ALPHA = 0.15; // EMA filter constant
@@ -134,7 +134,6 @@ unsigned long lastThermalCheckTime = 0;
 float lastThermalTemp = 0.0;
 
 // Function declarations to resolve forward references
-void adjustMenuValue(int dir);
 void checkClicks();
 void handleBoost();
 void saveMenuSettings();
@@ -215,7 +214,8 @@ void initializePins() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LED_OFF_PIN, OUTPUT);
   pinMode(BUZZ_PIN, OUTPUT);
-  pinMode(ENCODER_DT_PIN, INPUT);
+  pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
+  pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
   digitalWrite(LED_OFF_PIN, HIGH);
 }
 
@@ -297,23 +297,42 @@ void saveMenuSettings() {
 }
 
 void encoderISR() {
-  if (ledOffState || sensorError || thermalRunawayError) return;
+  if (sensorError || thermalRunawayError) return;
   
-  if (isSleeping) {
-    isSleeping = false;
-    lastActivityTime = millis();
-    return; // Wake up first without changing temperature
-  }
-
   if (inMenu) {
     int dir = (digitalRead(ENCODER_DT_PIN) == HIGH) ? 1 : -1;
     if (editMode) {
-      adjustMenuValue(dir);
+      switch (menuIndex) {
+        case 0: // Sleep Temp
+          sleepTempSetting = constrain(sleepTempSetting + (dir * 5), 100, 200);
+          break;
+        case 1: // Sleep Time (minutes, 0 = Disabled)
+          sleepTimeSetting = constrain(sleepTimeSetting + dir, 0, 10);
+          break;
+        case 2: // Off Time (minutes)
+          offTimeSetting = constrain(offTimeSetting + dir, 1, 20);
+          // Ensure shutoff time is strictly greater than sleep time
+          if (sleepTimeSetting > 0 && offTimeSetting <= sleepTimeSetting) {
+            offTimeSetting = sleepTimeSetting + 1;
+          }
+          break;
+        case 3: // Temp Unit
+          isFahrenheit = !isFahrenheit;
+          break;
+      }
     } else {
       menuIndex = constrain(menuIndex + dir, 0, 4);
     }
     lastActivityTime = millis();
     return;
+  }
+  
+  if (ledOffState) return;
+
+  if (isSleeping) {
+    isSleeping = false;
+    lastActivityTime = millis();
+    return; // Wake up first without changing temperature
   }
   
   if (digitalRead(ENCODER_DT_PIN) == HIGH) {
@@ -986,26 +1005,7 @@ void handleBoost() {
   }
 }
 
-void adjustMenuValue(int dir) {
-  switch (menuIndex) {
-    case 0: // Sleep Temp
-      sleepTempSetting = constrain(sleepTempSetting + (dir * 5), 100, 200);
-      break;
-    case 1: // Sleep Time (minutes, 0 = Disabled)
-      sleepTimeSetting = constrain(sleepTimeSetting + dir, 0, 10);
-      break;
-    case 2: // Off Time (minutes)
-      offTimeSetting = constrain(offTimeSetting + dir, 1, 20);
-      // Ensure shutoff time is strictly greater than sleep time
-      if (sleepTimeSetting > 0 && offTimeSetting <= sleepTimeSetting) {
-        offTimeSetting = sleepTimeSetting + 1;
-      }
-      break;
-    case 3: // Temp Unit
-      isFahrenheit = !isFahrenheit;
-      break;
-  }
-}
+
 
 void checkClicks() {
   if (clickCount > 0 && (millis() - lastClickTime > 250)) {
