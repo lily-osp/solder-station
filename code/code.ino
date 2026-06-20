@@ -228,19 +228,32 @@ void initializeDisplay() {
     for(;;); // Don't proceed, loop forever
   }
   display.clearDisplay();
-  display.setTextSize(1);
+  display.drawRect(0, 0, 128, 64, SSD1306_WHITE);
+  display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0);
-  display.println(F("Initializing..."));
+  display.setCursor(22, 20);
+  display.print(F("LILYOSP"));
+  display.drawFastHLine(10, 40, 108, SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(22, 46);
+  display.print(F("Solder Station"));
   display.display();
 #else
   lcd.init();
   lcd.backlight();
   lcd.clear();
   bigNum.begin();
-  lcd.setCursor(0, 0);
-  lcd.print(F("SET"));
+  lcd.setCursor(4, 0);
+  lcd.print(F("LILYOSP"));
+  lcd.setCursor(1, 1);
+  lcd.print(F("Solder Station"));
 #endif
+
+  // 8 seconds delay loop safely resetting watchdog (timeout is 4s)
+  for (int i = 0; i < 80; i++) {
+    delay(100);
+    wdt_reset();
+  }
 }
 
 void initializeWS2812() {
