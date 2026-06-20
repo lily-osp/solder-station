@@ -8,7 +8,7 @@ config:
 ---
 flowchart TD
     Start([Start]) --> Init[Initialize Watchdog, Pins, Display, WS2812]
-    Init --> ReadSaved[Load Temperature from EEPROM]
+    Init --> ReadSaved[Load Temperature & Settings from EEPROM]
     ReadSaved --> SetInit[Set knob = Saved Temp, seed EMA Filter]
     SetInit --> Loop[Main Loop]
     Loop --> ResetWDT[Reset Watchdog]
@@ -25,10 +25,25 @@ flowchart TD
     CheckReset -- No --> Loop
     
     FilterEMA --> DebounceBtn[Read & Debounce Button]
-    DebounceBtn --> HandleBtn{State changed to LOW?}
-    HandleBtn -- Yes --> ToggleSystem[Toggle On/Off / Start Ramping]
-    HandleBtn -- No --> CheckState{System On?}
-    ToggleSystem --> CheckState
+    DebounceBtn --> HandleLongPress{Held for 1.5s?}
+    HandleLongPress -- Yes --> ToggleMenu[inMenu = !inMenu, editMode = false, Save if exiting]
+    HandleLongPress -- No --> CheckMenuState{inMenu is true?}
+    ToggleMenu --> Loop
+    
+    CheckMenuState -- Yes --> MenuMode[Menu Mode: pwm = 0, LED Off]
+    MenuMode --> UpdateMenuDisp[Render Menu: Sleep Temp/Time, Off Time, Temp Unit]
+    UpdateMenuDisp --> CheckMenuClicks{Button Clicked?}
+    CheckMenuClicks -- Yes --> ToggleEdit[Toggle editMode]
+    CheckMenuClicks -- No --> CheckMenuRotary{Rotary Turned?}
+    ToggleEdit --> Loop
+    CheckMenuRotary -- Yes --> AdjMenu[If editMode: Adjust Setting Value <br> Else: Scroll menuIndex 0-3 loop]
+    CheckMenuRotary -- No --> Loop
+    AdjMenu --> Loop
+
+    CheckMenuState -- No --> CheckClicks{Button Clicked?}
+    CheckClicks -- Yes --> HandleNormalClicks[Single Click: Toggle Heat/Ramping <br> Double Click: Toggle Boost]
+    CheckClicks -- No --> CheckState{System On?}
+    HandleNormalClicks --> CheckState
     
     CheckState -- No (Off) --> SetPWMZero[Set pwm = 0, LED Off]
     SetPWMZero --> UpdateDispOff[Display OFF / ---]
@@ -51,7 +66,7 @@ flowchart TD
     UsePIDPWM --> ApplyPWM
     
     ApplyPWM --> UpdateDispOn[Display SET Temp / Actual Temp Avg]
-    UpdateDispOn --> AutoShutoff{Inactive for 10 mins?}
+    UpdateDispOn --> AutoShutoff{Inactive for Off Time?}
     
     UpdateDispOff --> Loop
     

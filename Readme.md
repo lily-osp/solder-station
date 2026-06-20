@@ -28,13 +28,14 @@ The **Soldering Iron Controller** is an Arduino-based system designed to precise
 - Precise temperature control (100°C to 500°C range)
 - PID-based temperature regulation with adaptive tuning (steady-state only)
 - Exponential Moving Average (EMA) filtering for stable PID inputs
-- Temperature ramping for rapid heating
-- OLED or I2C LCD display for clear temperature readouts & status messages
-- WS2812 RGB LED for status indication
-- Rotary encoder with push button for intuitive control
+- Temperature ramping (rapid heating to 500°C for 20 seconds)
+- Two-stage standby: Sleep Mode (heats to 150°C or sleep setting) and Auto Shut-Off
+- Boost Mode (+50°C for 45 seconds via double-click)
+- Configuration Menu (Sleep Temp, Sleep Time, Off Time, Temp Unit) with infinite scrolling loop
+- OLED (SSD1306) or 16x2 I2C LCD display support
+- WS2812 RGB LED for status indication (pulsing blue in sleep, warning colors)
 - Software-debounced input controls (50ms window)
-- EEPROM write preservation (asynchronous save after 2 seconds of knob idle)
-- Automatic shut-off after 10 minutes of inactivity
+- EEPROM write preservation (asynchronous save after 2 seconds of inactivity)
 - Watchdog timer for system reliability
 - Sensor fault, thermal runaway, and overheat protections
 
@@ -99,21 +100,29 @@ Follow the wiring instructions for correct setup:
 7. **LED Off Indicator**:
    - Connect to D8.
 
-Ensure all components share a common ground and proper power connections.
+8. Ensure all components share a common ground and proper power connections.
 
 ## Usage
 
 1. Power on the controller; the last used temperature will be loaded.
-2. Adjust the temperature with the rotary encoder.
+2. Adjust the temperature with the rotary encoder when in active mode.
 3. Status LEDs indicate:
    - **Red**: Heating
    - **Green**: Ready
-   - **Blue**: Cooling
+   - **Blue**: Cooling (or pulsing blue in sleep)
    - **Yellow**: Warning (near max temperature, or dangerously hot when OFF)
    - **Purple**: Ramping
    - **Flashing Red/Beeping**: Error State
    - **Off**: Iron off or auto-shutoff (unless still dangerously hot)
-4. Press the encoder button to toggle the iron on/off, start ramping mode, or clear active errors.
+4. Button Controls:
+   - **Single Click (Active)**: Start Ramping Mode (heat to 500°C for 20s) or toggle OFF (if already ramping).
+   - **Single Click (OFF/Sleep/Error)**: Wake up / Toggle ON / Clear active errors.
+   - **Double Click (Active)**: Toggle Boost Mode (+50°C for 45s).
+   - **Long Press (1.5s)**: Enter/Exit Settings Menu (saves settings to EEPROM on exit).
+5. Settings Menu:
+   - Navigate settings by rotating the encoder (infinite loop wrapping).
+   - Click to enter Edit Mode (indicated by brackets e.g. `[value]`), rotate to adjust value, click again to save.
+   - Hold button for 1.5s to save and exit back to operation mode.
 
 ## Temperature Control System
 
