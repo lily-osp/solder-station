@@ -354,18 +354,52 @@ void controlIronAndLED() {
       if (errorToggleState) {
         setLEDColor(COLOR_HEATING);
         tone(BUZZ_PIN, 1200, 100);
+#ifndef USE_OLED
+        lcd.backlight();
+#endif
       } else {
         setLEDColor(COLOR_OFF);
         noTone(BUZZ_PIN);
+#ifndef USE_OLED
+        lcd.noBacklight();
+#endif
       }
     }
+    digitalWrite(LED_OFF_PIN, HIGH);
     return;
   }
 
+  // Synchronize LED OFF pin with system state
+  digitalWrite(LED_OFF_PIN, ledOffState ? HIGH : LOW);
+
   if (ledOffState) {
     pwm = 0;
-    setLEDColor(COLOR_OFF);
+    
+    // Warning and cooling status LED indicator when system is off
+    if (currentTempAvg > 50) {
+      if (currentTempAvg > MAX_TEMP - 50) {
+        setLEDColor(COLOR_WARNING);
+      } else {
+        setLEDColor(COLOR_COOLING);
+      }
+    } else {
+      setLEDColor(COLOR_OFF);
+    }
+
+#ifndef USE_OLED
+    // Manage LCD backlight in OFF state (keep backlight on while shutoff message is showing)
+    if (autoShutoffMsgStartTime == 0 || (millis() - autoShutoffMsgStartTime >= 2000)) {
+      lcd.noBacklight();
+    } else {
+      lcd.backlight();
+    }
+#endif
   } else {
+    // We are active
+#ifndef USE_OLED
+    lcd.backlight();
+#endif
+
     // Overshoot prevention: cut power if temperature goes above Setpoint + overshoot limit
     if (currentTemp > (Setpoint + MAX_OVERSHOOT)) {
       pwm = 0;
