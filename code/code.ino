@@ -25,6 +25,9 @@
 #define LED_OFF_PIN 8
 #define EEPROM_TEMP_ADDRESS 0
 #define EEPROM_UNIT_ADDRESS 2
+#define EEPROM_SLEEP_TEMP_ADDRESS 3
+#define EEPROM_SLEEP_TIME_ADDRESS 5
+#define EEPROM_OFF_TIME_ADDRESS 6
 
 // Constants
 const int MIN_TEMP = 28;
@@ -130,6 +133,12 @@ const float FILTER_ALPHA = 0.15; // EMA filter constant
 unsigned long lastThermalCheckTime = 0;
 float lastThermalTemp = 0.0;
 
+// Function declarations to resolve forward references
+void adjustMenuValue(int dir);
+void checkClicks();
+void handleBoost();
+void saveMenuSettings();
+
 // Function Overloads for Buzzer
 void beep() {
   tone(BUZZ_PIN, 1000, 100);
@@ -219,7 +228,7 @@ void initializeDisplay() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0,0);
-  display.println("Initializing...");
+  display.println(F("Initializing..."));
   display.display();
 #else
   lcd.init();
@@ -227,7 +236,7 @@ void initializeDisplay() {
   lcd.clear();
   bigNum.begin();
   lcd.setCursor(0, 0);
-  lcd.print("SET");
+  lcd.print(F("SET"));
 #endif
 }
 
@@ -236,10 +245,6 @@ void initializeWS2812() {
   pixel.setBrightness(50); // Set to 50% brightness
   pixel.show(); // Initialize all pixels to 'off'
 }
-
-#define EEPROM_SLEEP_TEMP_ADDRESS 3
-#define EEPROM_SLEEP_TIME_ADDRESS 5
-#define EEPROM_OFF_TIME_ADDRESS 6
 
 void loadSavedTemperature() {
   int savedTemp = (EEPROM.read(EEPROM_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_TEMP_ADDRESS + 1);
@@ -538,41 +543,41 @@ void updateDisplay() {
       display.clearDisplay();
       display.setTextSize(1);
       display.setCursor(0, 0);
-      display.println("--- SETTINGS MENU ---");
+      display.println(F("--- SETTINGS MENU ---"));
       
       for (int i = 0; i < 5; i++) {
         display.setCursor(0, 12 + (i * 10));
         if (menuIndex == i) {
-          display.print(editMode ? "* " : "> ");
+          display.print(editMode ? F("* ") : F("> "));
         } else {
-          display.print("  ");
+          display.print(F("  "));
         }
         
         switch (i) {
           case 0:
-            display.print("Sleep Temp: ");
+            display.print(F("Sleep Temp: "));
             {
               int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
               display.print(temp);
-              display.print(isFahrenheit ? "F" : "C");
+              display.print(isFahrenheit ? F("F") : F("C"));
             }
             break;
           case 1:
-            display.print("Sleep Time: ");
-            if (sleepTimeSetting == 0) display.print("Disabled");
-            else { display.print(sleepTimeSetting); display.print(" min"); }
+            display.print(F("Sleep Time: "));
+            if (sleepTimeSetting == 0) display.print(F("Disabled"));
+            else { display.print(sleepTimeSetting); display.print(F(" min")); }
             break;
           case 2:
-            display.print("Off Time:   ");
+            display.print(F("Off Time:   "));
             display.print(offTimeSetting);
-            display.print(" min");
+            display.print(F(" min"));
             break;
           case 3:
-            display.print("Temp Unit:  ");
-            display.print(isFahrenheit ? "Fahrenheit" : "Celsius");
+            display.print(F("Temp Unit:  "));
+            display.print(isFahrenheit ? F("Fahrenheit") : F("Celsius"));
             break;
           case 4:
-            display.print("Save & Exit");
+            display.print(F("Save & Exit"));
             break;
         }
       }
@@ -585,10 +590,10 @@ void updateDisplay() {
     if (sensorError) {
       display.setTextSize(2);
       display.setCursor(0, 0);
-      display.println("SENSOR");
-      display.println("ERROR");
+      display.println(F("SENSOR"));
+      display.println(F("ERROR"));
       display.setTextSize(1);
-      display.println("Check sensor wire");
+      display.println(F("Check sensor wire"));
       display.display();
       return;
     }
@@ -596,10 +601,10 @@ void updateDisplay() {
     if (thermalRunawayError) {
       display.setTextSize(2);
       display.setCursor(0, 0);
-      display.println("THERMAL");
-      display.println("RUNAWAY");
+      display.println(F("THERMAL"));
+      display.println(F("RUNAWAY"));
       display.setTextSize(1);
-      display.println("System stopped");
+      display.println(F("System stopped"));
       display.display();
       return;
     }
@@ -607,8 +612,8 @@ void updateDisplay() {
     if (autoShutoffMsgStartTime != 0 && millis() - autoShutoffMsgStartTime < 2000) {
       display.setTextSize(2);
       display.setCursor(0,0);
-      display.println("Auto Shut-off");
-      display.println("Activated");
+      display.println(F("Auto Shut-off"));
+      display.println(F("Activated"));
       display.display();
       return;
     }
@@ -616,35 +621,35 @@ void updateDisplay() {
     display.setTextSize(2);
     display.setCursor(0,0);
     if (isRamping) {
-      display.print("RAMP ");
+      display.print(F("RAMP "));
       int remainingTime = (RAMP_DURATION - (currentMillis - rampStartTime)) / 1000;
       if (remainingTime < 0) remainingTime = 0;
       display.setCursor(74, 0);
       display.print(remainingTime);
-      display.print("s");
+      display.print(F("s"));
     } else if (isBoostActive) {
-      display.print("BOOST");
+      display.print(F("BOOST"));
       int remainingTime = (BOOST_DURATION - (currentMillis - boostStartTime)) / 1000;
       if (remainingTime < 0) remainingTime = 0;
       display.setCursor(74, 0);
       display.print(remainingTime);
-      display.print("s");
+      display.print(F("s"));
     } else if (isSleeping) {
-      display.print("SLEEP");
+      display.print(F("SLEEP"));
       display.setCursor(74, 0);
       int targetTemp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
       display.print(targetTemp);
       display.setTextSize(1);
       display.print((char)247);
-      display.print(isFahrenheit ? "F" : "C");
+      display.print(isFahrenheit ? F("F") : F("C"));
     } else {
-      display.print(ledOffState ? "OFF  " : "SET  ");
+      display.print(ledOffState ? F("OFF  ") : F("SET  "));
       display.setCursor(74, 0);
       int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
-      display.print(ledOffState ? "---" : String(targetTemp));
+      display.print(ledOffState ? F("---") : String(targetTemp));
       display.setTextSize(1);
       display.print((char)247);
-      display.print(isFahrenheit ? "F" : "C");
+      display.print(isFahrenheit ? F("F") : F("C"));
     }
 
     display.setTextSize(4);
@@ -653,7 +658,7 @@ void updateDisplay() {
     display.print(actualTempDisp);
     display.setTextSize(3);
     display.print((char)247);
-    display.print(isFahrenheit ? "F" : "C");
+    display.print(isFahrenheit ? F("F") : F("C"));
 
     // Draw power bar at the bottom when active
     if (!ledOffState && !sensorError && !thermalRunawayError) {
@@ -671,41 +676,65 @@ void updateDisplay() {
       lcd.setCursor(0, 0);
       switch (menuIndex) {
         case 0:
-          lcd.print("1. Sleep Temp   ");
+          lcd.print(F("1. Sleep Temp   "));
           lcd.setCursor(0, 1);
           {
             int temp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
-            if (editMode) lcd.print("Edit: [" + String(temp) + (isFahrenheit ? "F" : "C") + "]   ");
-            else lcd.print("Value: " + String(temp) + (isFahrenheit ? "F" : "C") + "    ");
+            if (editMode) {
+              lcd.print(F("Edit: ["));
+              lcd.print(temp);
+              lcd.print(isFahrenheit ? F("F]   ") : F("C]   "));
+            } else {
+              lcd.print(F("Value: "));
+              lcd.print(temp);
+              lcd.print(isFahrenheit ? F("F    ") : F("C    "));
+            }
           }
           break;
         case 1:
-          lcd.print("2. Sleep Time   ");
+          lcd.print(F("2. Sleep Time   "));
           lcd.setCursor(0, 1);
           if (sleepTimeSetting == 0) {
-            if (editMode) lcd.print("Edit: [Disabled]");
-            else lcd.print("Value: Disabled ");
+            if (editMode) lcd.print(F("Edit: [Disabled]"));
+            else lcd.print(F("Value: Disabled "));
           } else {
-            if (editMode) lcd.print("Edit: [" + String(sleepTimeSetting) + "m]     ");
-            else lcd.print("Value: " + String(sleepTimeSetting) + "m      ");
+            if (editMode) {
+              lcd.print(F("Edit: ["));
+              lcd.print(sleepTimeSetting);
+              lcd.print(F("m]     "));
+            } else {
+              lcd.print(F("Value: "));
+              lcd.print(sleepTimeSetting);
+              lcd.print(F("m      "));
+            }
           }
           break;
         case 2:
-          lcd.print("3. Off Time     ");
+          lcd.print(F("3. Off Time     "));
           lcd.setCursor(0, 1);
-          if (editMode) lcd.print("Edit: [" + String(offTimeSetting) + "m]     ");
-          else lcd.print("Value: " + String(offTimeSetting) + "m      ");
+          if (editMode) {
+            lcd.print(F("Edit: ["));
+            lcd.print(offTimeSetting);
+            lcd.print(F("m]     "));
+          } else {
+            lcd.print(F("Value: "));
+            lcd.print(offTimeSetting);
+            lcd.print(F("m      "));
+          }
           break;
         case 3:
-          lcd.print("4. Temp Unit    ");
+          lcd.print(F("4. Temp Unit    "));
           lcd.setCursor(0, 1);
-          if (editMode) lcd.print("Edit: [" + String(isFahrenheit ? "F" : "C") + "]       ");
-          else lcd.print("Value: " + String(isFahrenheit ? "Fahrenheit" : "Celsius") + " ");
+          if (editMode) {
+            lcd.print(isFahrenheit ? F("Edit: [F]       ") : F("Edit: [C]       "));
+          } else {
+            lcd.print(isFahrenheit ? F("Value: Fahrenheit") : F("Value: Celsius   "));
+          }
           break;
         case 4:
-          lcd.print("5. Save & Exit  ");
+          lcd.print(F("5. Save & Exit  "));
           lcd.setCursor(0, 1);
-          lcd.print("Click to exit   ");
+          lcd.print(F("Click to exit   "));
           break;
       }
       return;
@@ -714,18 +743,18 @@ void updateDisplay() {
     if (sensorError) {
       if (!lastWasError) { lcd.clear(); lastWasError = true; }
       lcd.setCursor(0, 0);
-      lcd.print("SENSOR ERROR    ");
+      lcd.print(F("SENSOR ERROR    "));
       lcd.setCursor(0, 1);
-      lcd.print("Check connection");
+      lcd.print(F("Check connection"));
       return;
     }
     
     if (thermalRunawayError) {
       if (!lastWasError) { lcd.clear(); lastWasError = true; }
       lcd.setCursor(0, 0);
-      lcd.print("THERMAL ERROR   ");
+      lcd.print(F("THERMAL ERROR   "));
       lcd.setCursor(0, 1);
-      lcd.print("System Stopped  ");
+      lcd.print(F("System Stopped  "));
       return;
     }
 
@@ -736,49 +765,56 @@ void updateDisplay() {
 
     if (autoShutoffMsgStartTime != 0 && millis() - autoShutoffMsgStartTime < 2000) {
       lcd.setCursor(0, 0);
-      lcd.print("Auto Shut-off   ");
+      lcd.print(F("Auto Shut-off   "));
       lcd.setCursor(0, 1);
-      lcd.print("Activated       ");
+      lcd.print(F("Activated       "));
       return;
     }
 
     lcd.setCursor(0, 0);
     if (isRamping) {
-      lcd.print("RAMP ");
+      lcd.print(F("RAMP "));
       int remainingTime = (RAMP_DURATION - (currentMillis - rampStartTime)) / 1000;
       if (remainingTime < 0) remainingTime = 0;
       lcd.setCursor(0, 1);
-      lcd.print(String(remainingTime) + "s   ");
+      lcd.print(remainingTime);
+      lcd.print(F("s   "));
     } else {
       if (ledOffState) {
-        lcd.print("OFF ");
+        lcd.print(F("OFF "));
         lcd.setCursor(0, 1);
-        lcd.print("--- ");
+        lcd.print(F("--- "));
       } else if (isSleeping) {
-        lcd.print("SLP ");
+        lcd.print(F("SLP "));
         lcd.setCursor(0, 1);
         int targetTemp = isFahrenheit ? (int)(sleepTempSetting * 1.8 + 32) : sleepTempSetting;
-        lcd.print("S" + String(targetTemp));
-        if (targetTemp < 100) lcd.print("  ");
-        else if (targetTemp < 1000) lcd.print(" ");
+        lcd.print(F("S"));
+        lcd.print(targetTemp);
+        if (targetTemp < 100) lcd.print(F("  "));
+        else if (targetTemp < 1000) lcd.print(F(" "));
       } else if (isBoostActive) {
-        lcd.print("BST ");
+        lcd.print(F("BST "));
         lcd.setCursor(0, 1);
         int remainingTime = (BOOST_DURATION - (currentMillis - boostStartTime)) / 1000;
         if (remainingTime < 0) remainingTime = 0;
-        lcd.print("B" + String(remainingTime) + "s ");
+        lcd.print(F("B"));
+        lcd.print(remainingTime);
+        lcd.print(F("s "));
       } else {
         int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
-        lcd.print("S" + String(targetTemp));
-        if (targetTemp < 100) lcd.print("  ");
-        else if (targetTemp < 1000) lcd.print(" ");
+        lcd.print(F("S"));
+        lcd.print(targetTemp);
+        if (targetTemp < 100) lcd.print(F("  "));
+        else if (targetTemp < 1000) lcd.print(F(" "));
         
         lcd.setCursor(0, 1);
         int powerPercent = (pwm * 100) / MAX_PWM;
-        lcd.print("P" + String(powerPercent) + "%");
-        if (powerPercent < 10) lcd.print("   ");
-        else if (powerPercent < 100) lcd.print("  ");
-        else lcd.print(" ");
+        lcd.print(F("P"));
+        lcd.print(powerPercent);
+        lcd.print(F("%"));
+        if (powerPercent < 10) lcd.print(F("   "));
+        else if (powerPercent < 100) lcd.print(F("  "));
+        else lcd.print(F(" "));
       }
     }
 
@@ -797,6 +833,7 @@ void handleButtonPress() {
   static unsigned long lastDebounceTime = 0;
   static int lastStableState = HIGH;
   static unsigned long buttonPressTime = 0;
+  static bool longPressTriggered = false;
 
   if (reading != lastButtonState) {
     lastDebounceTime = millis();
@@ -807,21 +844,10 @@ void handleButtonPress() {
       lastStableState = reading;
       if (lastStableState == LOW) {
         buttonPressTime = millis();
+        longPressTriggered = false;
       } else {
-        unsigned long pressDuration = millis() - buttonPressTime;
-        if (pressDuration >= 1500) {
-          // Long press: Toggle menu activation
-          inMenu = !inMenu;
-          if (inMenu) {
-            editMode = false;
-            menuIndex = 0;
-            pwm = 0;
-            analogWrite(IRON_PIN, 0);
-          } else {
-            saveMenuSettings();
-          }
-          beep(300); // Long beep indicator
-        } else {
+        // Button released
+        if (!longPressTriggered) {
           // Short press: Register click
           clickCount++;
           lastClickTime = millis();
@@ -831,6 +857,25 @@ void handleButtonPress() {
     }
   }
   lastButtonState = reading;
+
+  // Active check for long press while button is held down
+  if (lastStableState == LOW && !longPressTriggered) {
+    if (millis() - buttonPressTime >= 1500) {
+      longPressTriggered = true;
+      // Toggle menu activation
+      inMenu = !inMenu;
+      if (inMenu) {
+        editMode = false;
+        menuIndex = 0;
+        pwm = 0;
+        analogWrite(IRON_PIN, 0);
+      } else {
+        saveMenuSettings();
+      }
+      beep(300); // Long beep indicator
+      lastActivityTime = millis();
+    }
+  }
 }
 
 void startRamping() {
