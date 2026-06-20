@@ -761,7 +761,16 @@ void updateDisplay() {
     if (ledOffState && !isSleeping) {
       display.print(F("---"));
     } else {
-      int targetTemp = isSleeping ? readIntAtomic(sleepTempSetting) : readIntAtomic(knob);
+      int targetTemp;
+      if (isSleeping) {
+        targetTemp = readIntAtomic(sleepTempSetting);
+      } else if (isRamping) {
+        targetTemp = calculateRampSetpoint();
+      } else if (isBoostActive) {
+        targetTemp = constrain(readIntAtomic(knob) + BOOST_TEMP_OFFSET, MIN_KNOB, MAX_KNOB);
+      } else {
+        targetTemp = readIntAtomic(knob);
+      }
       display.print(isFahrenheit ? (int)(targetTemp * 1.8 + 32) : targetTemp);
       display.print((char)247);
       display.print(isFahrenheit ? F("F") : F("C"));
