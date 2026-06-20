@@ -24,6 +24,7 @@
 #define BUTTON_PIN 5
 #define LED_OFF_PIN 8
 #define EEPROM_TEMP_ADDRESS 0
+#define EEPROM_UNIT_ADDRESS 2
 
 // Constants
 const int MIN_TEMP = 28;
@@ -100,6 +101,7 @@ int lastButtonState = HIGH;
 bool sensorError = false;
 bool thermalRunawayError = false;
 unsigned long autoShutoffMsgStartTime = 0;
+bool isFahrenheit = false;
 
 double filteredTemp = 0.0;
 const float FILTER_ALPHA = 0.15; // EMA filter constant
@@ -212,6 +214,14 @@ void loadSavedTemperature() {
   int savedTemp = (EEPROM.read(EEPROM_TEMP_ADDRESS) << 8) | EEPROM.read(EEPROM_TEMP_ADDRESS + 1);
   if (savedTemp >= MIN_KNOB && savedTemp <= MAX_KNOB) {
     knob = savedTemp;
+  }
+  
+  // Load unit setting
+  byte unit = EEPROM.read(EEPROM_UNIT_ADDRESS);
+  if (unit == 1) {
+    isFahrenheit = true;
+  } else {
+    isFahrenheit = false;
   }
 }
 
@@ -470,18 +480,27 @@ void updateDisplay() {
     } else {
       display.print(ledOffState ? "OFF  " : "SET  ");
       display.setCursor(74, 0);
-      display.print(ledOffState ? "---" : String(knob));
+      int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
+      display.print(ledOffState ? "---" : String(targetTemp));
       display.setTextSize(1);
       display.print((char)247);
-      display.print("C");
+      display.print(isFahrenheit ? "F" : "C");
     }
 
     display.setTextSize(4);
     display.setCursor(0, 32);
-    display.print(currentTempAvg);
+    int actualTempDisp = isFahrenheit ? (int)(currentTempAvg * 1.8 + 32) : currentTempAvg;
+    display.print(actualTempDisp);
     display.setTextSize(3);
     display.print((char)247);
-    display.print("C");
+    display.print(isFahrenheit ? "F" : "C");
+
+    // Draw power bar at the bottom when active
+    if (!ledOffState && !sensorError && !thermalRunawayError) {
+      display.drawRect(0, 58, 128, 6, SSD1306_WHITE);
+      int barWidth = map(pwm, 0, MAX_PWM, 0, 126);
+      display.fillRect(1, 59, barWidth, 4, SSD1306_WHITE);
+    }
 
     display.display();
 #else
@@ -525,14 +544,31 @@ void updateDisplay() {
       lcd.setCursor(0, 1);
       lcd.print(String(remainingTime) + "s   ");
     } else {
-      lcd.print(ledOffState ? "OFF  " : "SET  ");
-      lcd.setCursor(0, 1);
-      lcd.print(ledOffState ? "--- " : String(knob) + (char)223 + "C ");
+      if (ledOffState) {
+        lcd.print("OFF ");
+        lcd.setCursor(0, 1);
+        lcd.print("--- ");
+      } else {
+        int targetTemp = isFahrenheit ? (int)(knob * 1.8 + 32) : knob;
+        lcd.print("S" + String(targetTemp));
+        if (targetTemp < 100) lcd.print("  ");
+        else if (targetTemp < 1000) lcd.print(" ");
+        
+        lcd.setCursor(0, 1);
+        int powerPercent = (pwm * 100) / MAX_PWM;
+        lcd.print("P" + String(powerPercent) + "%");
+        if (powerPercent < 10) lcd.print("   ");
+        else if (powerPercent < 100) lcd.print("  ");
+        else lcd.print(" ");
+      }
     }
 
-    bigNum.displayLargeInt(currentTempAvg, 6, 0, 3, false);
+    int actualTempDisp = isFahrenheit ? (int)(currentTempAvg * 1.8 + 32) : currentTempAvg;
+    bigNum.displayLargeInt(actualTempDisp, 6, 0, 3, false);
     lcd.setCursor(15, 0);
-    lcd.print("o");
+    lcd.print((char)223); // Degree symbol
+    lcd.setCursor(15, 1);
+    lcd.print(isFahrenheit ? "F" : "C");
 #endif
   }
 }
@@ -541,6 +577,7 @@ void handleButtonPress() {
   int reading = digitalRead(BUTTON_PIN);
   static unsigned long lastDebounceTime = 0;
   static int lastStableState = HIGH;
+  static unsigned long buttonPressTime = 0;
 
   if (reading != lastButtonState) {
     lastDebounceTime = millis();
@@ -550,24 +587,35 @@ void handleButtonPress() {
     if (reading != lastStableState) {
       lastStableState = reading;
       if (lastStableState == LOW) {
-        if (sensorError || thermalRunawayError) {
-          // Clear error on button press to retry
-          sensorError = false;
-          thermalRunawayError = false;
-          lastThermalCheckTime = millis();
-          lastThermalTemp = currentTemp;
-          beep(200);
-        } else if (ledOffState) {
-          ledOffState = false;
-          digitalWrite(LED_OFF_PIN, LOW);
-          beep(100);
-        } else if (!isRamping) {
-          startRamping();
+        buttonPressTime = millis();
+      } else {
+        unsigned long pressDuration = millis() - buttonPressTime;
+        if (pressDuration >= 1500) {
+          // Long press: Toggle unit setting
+          isFahrenheit = !isFahrenheit;
+          EEPROM.update(EEPROM_UNIT_ADDRESS, isFahrenheit ? 1 : 0);
+          beep(300); // Long beep indicator
         } else {
-          ledOffState = true;
-          isRamping = false;
-          digitalWrite(LED_OFF_PIN, HIGH);
-          beep(50);
+          // Short press: Action logic
+          if (sensorError || thermalRunawayError) {
+            // Clear error on button press to retry
+            sensorError = false;
+            thermalRunawayError = false;
+            lastThermalCheckTime = millis();
+            lastThermalTemp = currentTemp;
+            beep(200);
+          } else if (ledOffState) {
+            ledOffState = false;
+            digitalWrite(LED_OFF_PIN, LOW);
+            beep(100);
+          } else if (!isRamping) {
+            startRamping();
+          } else {
+            ledOffState = true;
+            isRamping = false;
+            digitalWrite(LED_OFF_PIN, HIGH);
+            beep(50);
+          }
         }
         lastActivityTime = millis();
       }
