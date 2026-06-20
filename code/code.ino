@@ -488,7 +488,7 @@ void updateDisplay() {
     }
 
     display.setTextSize(4);
-    display.setCursor(0, 32);
+    display.setCursor(0, 28);
     int actualTempDisp = isFahrenheit ? (int)(currentTempAvg * 1.8 + 32) : currentTempAvg;
     display.print(actualTempDisp);
     display.setTextSize(3);
