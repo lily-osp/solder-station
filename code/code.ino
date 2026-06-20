@@ -254,6 +254,10 @@ void initializeDisplay() {
     delay(100);
     wdt_reset();
   }
+
+#ifndef USE_OLED
+  lcd.clear(); // Clear LCD splash remnants before loop starts
+#endif
 }
 
 void initializeWS2812() {
